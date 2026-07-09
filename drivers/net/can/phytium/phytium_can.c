@@ -445,14 +445,11 @@ static void phytium_can_write_frame(struct phytium_can_dev *cdev)
 {
 	struct canfd_frame *cf = (struct canfd_frame *)cdev->tx_skb->data;
 	struct net_device *dev = cdev->net;
-	struct net_device_stats *stats = &dev->stats;
 	struct sk_buff *skb = cdev->tx_skb;
 	u32 i, id, dlc = 0, frame_head[2] = {0, 0};
 	u32 data_len;
-	unsigned int len;
 
 	data_len = can_fd_len2dlc(cf->len);
-	cdev->tx_skb = NULL;
 
 	/* Watch carefully on the bit sequence */
 	if (cf->can_id & CAN_EFF_FLAG) {
@@ -534,44 +531,27 @@ static void phytium_can_write_frame(struct phytium_can_dev *cdev)
 		}
 	}
 
-	stats->tx_bytes += cf->len;
-	stats->tx_packets++;
-
 	cdev->is_tx_done = false;
 	cdev->is_need_stop_xmit = true;
 	mod_timer(&cdev->timer, jiffies + HZ / 10);
 
 	netdev_dbg(dev, "Trigger send message!\n");
 
-	can_put_echo_skb(skb, dev, 0, 0);
-	len = can_get_echo_skb(dev, 0, NULL);
 	return;
 }
 
 static netdev_tx_t phytium_can_tx_handler(struct phytium_can_dev *cdev)
 {
 	struct net_device *dev = cdev->net;
-	u32 tx_fifo_used;
-	unsigned long flags;
+	struct sk_buff *skb = cdev->tx_skb;
 
+	/* This controller only reports a frame-end status bit, not a completed
+	 * FIFO slot/index.  Keep a single skb in flight so TEIS maps exactly to
+	 * echo slot 0, like other single-completion CAN controllers.
+	 */
+	netif_stop_queue(dev);
+	can_put_echo_skb(skb, dev, 0, 0);
 	phytium_can_write_frame(cdev);
-	/* Check if the TX buffer is full */
-	tx_fifo_used = 4 * ((phytium_can_read(cdev, CAN_FIFO_CNT) & FIFO_CNT_TFN) >> 16);
-	if (cdev->can.ctrlmode & CAN_CTRLMODE_FD) {
-		if (CAN_FIFO_BYTE_LEN - tx_fifo_used <= KEEP_CANFD_FIFO_MIN_LEN) {
-			netif_stop_queue(dev);
-			spin_lock_irqsave(&cdev->lock, flags);
-			cdev->is_stop_queue_flag = STOP_QUEUE_TRUE;
-			spin_unlock_irqrestore(&cdev->lock, flags);
-		}
-	} else {
-		if (CAN_FIFO_BYTE_LEN - tx_fifo_used  <= KEEP_CAN_FIFO_MIN_LEN) {
-			netif_stop_queue(dev);
-			spin_lock_irqsave(&cdev->lock, flags);
-			cdev->is_stop_queue_flag = STOP_QUEUE_TRUE;
-			spin_unlock_irqrestore(&cdev->lock, flags);
-		}
-	}
 
 	return NETDEV_TX_OK;
 }
@@ -585,60 +565,54 @@ static void phytium_can_tx_interrupt(struct net_device *ndev, u32 isr)
 {
 	struct phytium_can_dev *cdev = netdev_priv(ndev);
 	struct net_device_stats *stats = &ndev->stats;
-	u32 tx_fifo_used = 0;
+	unsigned int len;
 
 	if (isr & INTR_TEIS)
 		phytium_can_set_reg_bits(cdev, CAN_INTR, INTR_TEIC);
 
-	/* Check if the TX buffer is full */
-	if (cdev->is_stop_queue_flag) {
-		tx_fifo_used =  4 * ((phytium_can_read(cdev, CAN_FIFO_CNT) & FIFO_CNT_TFN) >> 16);
-		if (cdev->can.ctrlmode & CAN_CTRLMODE_FD) {
-			if (CAN_FIFO_BYTE_LEN - tx_fifo_used > KEEP_CANFD_FIFO_MIN_LEN) {
-				netif_wake_queue(ndev);
-				cdev->is_stop_queue_flag = STOP_QUEUE_FALSE;
-			}
-		} else {
-			if (CAN_FIFO_BYTE_LEN - tx_fifo_used  > KEEP_CAN_FIFO_MIN_LEN) {
-				netif_wake_queue(ndev);
-				cdev->is_stop_queue_flag = STOP_QUEUE_FALSE;
-			}
-		}
+	len = can_get_echo_skb(ndev, 0, NULL);
+	if (len) {
+		stats->tx_bytes += len;
+		stats->tx_packets++;
+	} else {
+		netdev_warn(ndev, "TX interrupt without echo skb\n");
 	}
 
+	cdev->tx_skb = NULL;
 	cdev->is_tx_done = true;
 	cdev->is_need_stop_xmit = false;
 	del_timer(&cdev->timer);
 
 	netdev_dbg(ndev, "Finish transform packets %lu\n", stats->tx_packets);
 
+	phytium_can_set_reg_bits(cdev, CAN_INTR,
+				 INTR_BOIE | INTR_PWIE | INTR_PEIE);
 
-	phytium_can_set_reg_bits(cdev, CAN_INTR, (INTR_BOIE |
-				 INTR_PWIE | INTR_PEIE));
+	netif_wake_queue(ndev);
 }
 
 static void phytium_can_tx_done_timeout(struct timer_list *t)
 {
 	struct phytium_can_dev *priv = from_timer(priv, t, timer);
 	struct net_device *ndev = priv->net;
+	unsigned long flags;
 
-	if (!priv->is_tx_done) {
-		if (priv->is_need_stop_xmit) {
-			netdev_dbg(ndev, "%s stop xmit\n", __func__);
-			priv->is_need_stop_xmit = false;
-			phytium_can_clr_reg_bits(priv, CAN_CTRL, CTRL_XFER);
-			phytium_can_clr_reg_bits(priv, CAN_INTR, (INTR_BOIE |
-						 INTR_PWIE | INTR_PEIE));
-			/* stop xmit and restart after 500ms */
-			mod_timer(&priv->timer, jiffies + HZ / 2);
-		} else {
-			netdev_dbg(ndev, "%s  start xmit\n", __func__);
-			priv->is_need_stop_xmit = true;
-			phytium_can_set_reg_bits(priv, CAN_CTRL, CTRL_XFER);
-			/* start xmit and stop after 250ms */
-			mod_timer(&priv->timer, jiffies + HZ / 4);
-		}
+	spin_lock_irqsave(&priv->lock, flags);
+	if (!priv->is_tx_done && priv->tx_skb) {
+		netdev_dbg(ndev, "tx done timeout\n");
+
+		priv->is_tx_done = true;
+		priv->is_need_stop_xmit = false;
+		priv->tx_skb = NULL;
+		ndev->stats.tx_errors++;
+
+		phytium_can_clr_reg_bits(priv, CAN_CTRL, CTRL_XFER);
+		phytium_can_set_reg_bits(priv, CAN_INTR, INTR_TEIC | INTR_TFIC);
+		phytium_can_set_reg_bits(priv, CAN_CTRL, CTRL_XFER | CTRL_TXREQ);
+		can_free_echo_skb(ndev, 0, NULL);
+		netif_wake_queue(ndev);
 	}
+	spin_unlock_irqrestore(&priv->lock, flags);
 }
 
 static void phytium_can_err_interrupt(struct net_device *ndev, u32 isr)
