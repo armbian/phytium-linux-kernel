@@ -48,10 +48,10 @@ phytium_npu_find_session_stream(struct phytium_npu_session *sess, int stream_id)
 
 	list_for_each_entry_safe(nesstream, tmp, &sess->stream_list, stream_list_entry) {
 		if (nesstream->nustream.estream.sid == stream_id)
-			break;
+			return nesstream;
 	}
 
-	return nesstream;
+	return NULL;
 }
 
 static struct npu_user_stream_rsp *
