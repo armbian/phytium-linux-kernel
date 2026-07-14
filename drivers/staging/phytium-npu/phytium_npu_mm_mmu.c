@@ -586,6 +586,7 @@ static int phytium_npu_mmu_map_sg(struct phytium_npu_session *sess, struct npu_m
 	struct phytium_npu_mmu_context *pnmctx;
 	u64 phys_addr;
 	int len, i, flags = 0;
+	int npu_page_idx = 0;
 
 	/* the driver will use self virtual address when
 	 * the user's config was not included virt_addr
@@ -604,13 +605,21 @@ static int phytium_npu_mmu_map_sg(struct phytium_npu_session *sess, struct npu_m
 		phytium_npu_mmu_get_ctx_pc_base_address(pnmctx);
 
 	for_each_sgtable_dma_sg(sgt, sg, i) {
+		int j, num_pages = 0;
 		phys_addr = sg_dma_address(sg);
 		len = sg_dma_len(sg);
+
 		if (!PAGE_ALIGNED(phys_addr) || !PAGE_ALIGNED(len))
 			PRDEBUG("%s:ERROR addr %llx or len %x is not page aligned!\n",
 				__func__, phys_addr, len);
 
-		phytium_npu_mmu_map_addr(pnmctx, ncmap, ncmap->virt_addr, phys_addr, i, flags);
+		num_pages = len / PHYT_MMU_ALLOC_PAGE_SIZE;
+		for (j = 0; j < num_pages; j++) {
+			dma_addr_t offset_addr = phys_addr + (j * PHYT_MMU_ALLOC_PAGE_SIZE);
+			phytium_npu_mmu_map_addr(pnmctx, ncmap, ncmap->virt_addr,
+						offset_addr, npu_page_idx, flags);
+			npu_page_idx++;
+		}
 	}
 
 	return 0;
@@ -620,6 +629,7 @@ static int phytium_npu_mmu_unmap_sg(struct npu_mctx_map *ncmap, struct sg_table 
 {
 	struct scatterlist *sg;
 	struct phytium_npu_mmu_context *pnmctx = ncmap->mctx->pnmctx;
+	int npu_page_idx = 0;
 	int i;
 
 	if (!ncmap->mctx || !ncmap->dma_buf) {
@@ -632,8 +642,16 @@ static int phytium_npu_mmu_unmap_sg(struct npu_mctx_map *ncmap, struct sg_table 
 	}
 	pr_debug("unmap mmu base virt:%#llx.pnmctx:%p,ncmap:%p", ncmap->virt_addr, pnmctx, ncmap);
 	for_each_sgtable_dma_sg(sgt, sg, i) {
-		PRDEBUG("unmap mmu virt:%#llx.", ncmap->virt_addr + i * 4096);
-		phytium_npu_mmu_unmap_addr(pnmctx, ncmap, ncmap->virt_addr, i);
+		int len = sg_dma_len(sg);
+		int num_pages = 0;
+		int j = 0;
+
+		num_pages = len / PHYT_MMU_ALLOC_PAGE_SIZE;
+		for (j = 0; j < num_pages; j++) {
+			PRDEBUG("unmap mmu virt:%#llx.", ncmap->virt_addr + npu_page_idx * 4096);
+			phytium_npu_mmu_unmap_addr(pnmctx, ncmap, ncmap->virt_addr, npu_page_idx);
+			npu_page_idx++;
+		}
 	}
 	if (ncmap->attach && ncmap->sgt && ncmap->dma_buf) {
 		dma_buf_unmap_attachment(ncmap->attach, ncmap->sgt, DMA_BIDIRECTIONAL);
