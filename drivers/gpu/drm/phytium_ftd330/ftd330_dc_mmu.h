@@ -97,9 +97,12 @@ typedef struct _dc_mmu {
 
 int dc_mmu_construct(struct device *dev, dc_mmu_pt *mmu);
 void dc_mmu_deconstruct(struct device *dev, dc_mmu_pt mmu);
-int dc_mmu_map_memory_and_flush(struct drm_device *dev, dc_mmu_pt mmu, u64 physical, u32 page_count,
-				u32 *address, bool continuous, bool security);
+int dc_mmu_map_memory_and_flush(struct drm_device *dev, dc_mmu_pt mmu,
+				struct page **pages, u32 page_count,
+				u64 physical, u32 *address, bool security);
 int dc_mmu_unmap_memory_and_flush(struct drm_device *dev, dc_mmu_pt mmu, u32 gpu_address,
 				  u32 page_count);
+int dc_mmu_map_sg_table_and_flush(struct drm_device *dev, dc_mmu_pt mmu, struct sg_table *sgt,
+				u32 page_count, u32 *address, bool security);
 
 #endif /* _FTD330_DC_MMU_H_ */

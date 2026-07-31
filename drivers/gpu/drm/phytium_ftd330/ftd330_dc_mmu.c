@@ -12,6 +12,7 @@
 #include <linux/pagemap.h>
 #include <linux/slab.h>
 #include <linux/vmalloc.h>
+#include <linux/scatterlist.h>
 
 #include <linux/delay.h>
 #include <linux/io.h>
@@ -638,70 +639,104 @@ static int dc_mmu_set_page(dc_mmu_pt mmu, u64 page_address, u32 *page_entry)
 	return 0;
 }
 
-static int dc_mmu_map_memory(dc_mmu_pt mmu, u64 physical, u32 page_count, u32 *address, bool continuous,
-		      bool security)
+static inline struct ftd330_dc *dc_mmu_get_dc(struct drm_device *dev)
 {
-	u32 virutal_address, i = 0;
-	u32 mtlb_num, mtlb_entry, mtlb_offset;
-	bool allocated = false;
-	int ret = 0;
+	struct ftd330_drm_private *priv = dev->dev_private;
 
-	ret = dc_mmu_allocate_pages(mmu, page_count, &virutal_address);
-	if (ret)
-		goto OnError;
+	if (!priv->dc_dev)
+		return NULL;
+	return dev_get_drvdata(priv->dc_dev);
+}
 
-	*address = virutal_address;
-	allocated = true;
-
-	FTD330_LOG("map memory physical = 0x%llx,virtual_address = 0x%x", physical, virutal_address);
-	/*Fill mtlb security bit*/
-	mtlb_num = _mtlb_offset(virutal_address + page_count * MMU_PAGE_4K_SIZE - 1) -
-		   _mtlb_offset(virutal_address) + 1;
-	mtlb_offset = _mtlb_offset(virutal_address);
-	mtlb_entry = mmu->mtlb_logical[mtlb_offset];
+static void dc_mmu_fill_mtlb(dc_mmu_pt mmu, u32 vaddr, u32 nr_pages, bool security)
+{
+	u32 mtlb_num = _mtlb_offset(vaddr + nr_pages * MMU_PAGE_4K_SIZE - 1) -
+		       _mtlb_offset(vaddr) + 1;
+	u32 mtlb_offset = _mtlb_offset(vaddr);
+	u32 mtlb_entry;
+	int i;
 
 	for (i = 0; i < mtlb_num; i++) {
 		mtlb_entry = mmu->mtlb_logical[mtlb_offset + i];
 		if (security) {
-			mtlb_entry = mtlb_entry | MMU_MTLB_SECURITY | MMU_MTLB_EXCEPTION;
+			mtlb_entry |= MMU_MTLB_SECURITY | MMU_MTLB_EXCEPTION;
 			_write_page_entry(&mmu->mtlb_logical[mtlb_offset + i], mtlb_entry);
 		} else {
-			mtlb_entry = mtlb_entry & (~MMU_MTLB_SECURITY);
+			mtlb_entry &= ~MMU_MTLB_SECURITY;
 			_write_page_entry(&mmu->mtlb_logical[mtlb_offset + i], mtlb_entry);
 		}
 	}
+}
 
-	/* Fill in page table */
-	for (i = 0; i < page_count; i++) {
-		u64 page_phy;
-		u32 *page_entry;
-		struct page **pages;
+static int dc_mmu_map_memory(dc_mmu_pt mmu, struct page **pages, u32 page_count,
+			     u64 physical, u32 *address, bool security)
+{
+	u32 virtual_address, i;
+	bool allocated = false;
+	int ret = 0;
 
-		if (continuous == true) {
-			page_phy = physical + i * MMU_PAGE_4K_SIZE;
-		} else {
-			pages = (struct page **)physical;
-			page_phy = page_to_phys(pages[i]);
+	ret = dc_mmu_allocate_pages(mmu, page_count, &virtual_address);
+	if (ret)
+		goto OnError;
+
+	*address = virtual_address;
+	allocated = true;
+
+	dc_mmu_fill_mtlb(mmu, virtual_address, page_count, security);
+
+	if (!pages) {
+		/* Contiguous physical memory path */
+		FTD330_LOG("map memory physical = 0x%llx, virtual_address = 0x%x",
+			   physical, virtual_address);
+
+		for (i = 0; i < page_count; i++) {
+			u64 page_phy = physical + i * MMU_PAGE_4K_SIZE;
+			u32 *page_entry;
+
+			ret = dc_mmu_get_page_entry(mmu, virtual_address, &page_entry);
+			if (ret)
+				goto OnError;
+
+			ret = dc_mmu_set_page(mmu, page_phy, page_entry);
+			if (ret)
+				goto OnError;
+
+			virtual_address += MMU_PAGE_4K_SIZE;
 		}
+	} else {
+		/* Page array path: expand each system page into 4K MMU sub-pages */
+		u32 subpages_per_page = PAGE_SIZE / MMU_PAGE_4K_SIZE;
+		u32 sys_nr_pages = page_count / subpages_per_page;
 
-		ret = dc_mmu_get_page_entry(mmu, virutal_address, &page_entry);
-		if (ret)
-			goto OnError;
+		FTD330_LOG("map page array, virtual_address = 0x%x, pages = %u",
+			   virtual_address, sys_nr_pages);
 
-		/* Write the page address to the page entry */
-		ret = dc_mmu_set_page(mmu, page_phy, page_entry);
-		if (ret)
-			goto OnError;
+		for (i = 0; i < sys_nr_pages; i++) {
+			u64 base_phys = page_to_phys(pages[i]);
+			u32 j;
 
-		/* Get next page */
-		virutal_address += MMU_PAGE_4K_SIZE;
+			for (j = 0; j < subpages_per_page; j++) {
+				u32 *page_entry;
+
+				ret = dc_mmu_get_page_entry(mmu, virtual_address, &page_entry);
+				if (ret)
+					goto OnError;
+
+				ret = dc_mmu_set_page(mmu, base_phys + j * MMU_PAGE_4K_SIZE,
+						     page_entry);
+				if (ret)
+					goto OnError;
+
+				virtual_address += MMU_PAGE_4K_SIZE;
+			}
+		}
 	}
 
 	return 0;
 
 OnError:
 	if (allocated)
-		dc_mmu_free_pages(mmu, virutal_address, page_count);
+		dc_mmu_free_pages(mmu, *address, page_count);
 	pr_info("%s fail!\n", __func__);
 
 	return ret;
@@ -735,24 +770,82 @@ int dc_mmu_unmap_memory_and_flush(struct drm_device *dev, dc_mmu_pt mmu, u32 gpu
 	return 0;
 }
 
-int dc_mmu_map_memory_and_flush(struct drm_device *dev, dc_mmu_pt mmu, u64 physical, u32 page_count,
-				u32 *address, bool continuous, bool security)
+int dc_mmu_map_memory_and_flush(struct drm_device *dev, dc_mmu_pt mmu,
+				struct page **pages, u32 page_count,
+				u64 physical, u32 *address, bool security)
 {
-	struct ftd330_drm_private *priv = dev->dev_private;
-	struct ftd330_dc *dc = NULL;
+	struct ftd330_dc *dc;
 	int ret;
 
-	if (!priv->dc_dev)
-		return -EINVAL;
-
-	dc = dev_get_drvdata(priv->dc_dev);
+	dc = dc_mmu_get_dc(dev);
 	if (!dc)
 		return -EINVAL;
 
-	ret = dc_mmu_map_memory(mmu, physical, page_count, address, continuous, security);
+	ret = dc_mmu_map_memory(mmu, pages, page_count, physical, address, security);
 	if (ret)
 		return ret;
 
 	dc_hw_mmu_flush(&dc->hw);
 	return 0;
 }
+
+int dc_mmu_map_sg_table_and_flush(struct drm_device *dev, dc_mmu_pt mmu, struct sg_table *sgt,
+				u32 page_count, u32 *address, bool security)
+{
+	struct ftd330_dc *dc;
+	struct scatterlist *sgl;
+	u32 virtual_address, i;
+	u32 allocated_pages = 0;
+	int ret = 0;
+
+	dc = dc_mmu_get_dc(dev);
+	if (!dc)
+		return -EINVAL;
+
+	/* Allocate virtual address space for the buffer */
+	ret = dc_mmu_allocate_pages(mmu, page_count, &virtual_address);
+	if (ret)
+		goto on_error;
+
+	*address = virtual_address;
+
+	dc_mmu_fill_mtlb(mmu, virtual_address, page_count, security);
+
+	/* Fill in page table by traversing SG table */
+	for_each_sg(sgt->sgl, sgl, sgt->nents, i) {
+		u64 sg_phys = sg_dma_address(sgl);
+		u32 sg_len = sg_dma_len(sgl);
+		u32 pages_in_sg = sg_len / MMU_PAGE_4K_SIZE;
+		u32 j;
+
+		for (j = 0; j < pages_in_sg; j++) {
+			u32 *page_entry;
+			u64 page_phy;
+
+			if (allocated_pages >= page_count)
+				break;
+
+			page_phy = sg_phys + j * MMU_PAGE_4K_SIZE;
+
+			ret = dc_mmu_get_page_entry(mmu, virtual_address, &page_entry);
+			if (ret)
+				goto on_error;
+
+			ret = dc_mmu_set_page(mmu, page_phy, page_entry);
+			if (ret)
+				goto on_error;
+
+			virtual_address += MMU_PAGE_4K_SIZE;
+			allocated_pages++;
+		}
+	}
+
+	dc_hw_mmu_flush(&dc->hw);
+	return 0;
+
+on_error:
+	if (allocated_pages > 0)
+		dc_mmu_free_pages(mmu, *address, allocated_pages);
+	return ret;
+}
+

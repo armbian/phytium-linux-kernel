@@ -67,7 +67,7 @@ static int get_pages(unsigned int nr_page, struct ftd330_gem_object *ftd330_obj)
 
 	do {
 		pages = NULL;
-		order = get_order(num_page * FTD330_ALLOC_PAGE_SIZE);
+		order = get_order(num_page * PAGE_SIZE);
 		num_page = 1 << order;
 
 		if ((num_page + page_count > nr_page) || (order >= MAX_ORDER)) {
@@ -108,7 +108,10 @@ static int get_pages(unsigned int nr_page, struct ftd330_gem_object *ftd330_obj)
 static int ftd330_gem_alloc_buf(struct ftd330_gem_object *ftd330_obj)
 {
 	struct drm_device *dev = ftd330_obj->base.dev;
-	unsigned int nr_pages;
+	unsigned int sys_nr_pages;
+#ifdef CONFIG_PHYTIUM_MMU
+	unsigned int mmu_nr_pages;
+#endif
 	struct sg_table sgt;
 	int ret = -ENOMEM;
 #ifdef CONFIG_PHYTIUM_MMU
@@ -130,9 +133,12 @@ static int ftd330_gem_alloc_buf(struct ftd330_gem_object *ftd330_obj)
 	if (!is_iommu_enabled(dev))
 		ftd330_obj->dma_attrs |= DMA_ATTR_FORCE_CONTIGUOUS;
 
-	nr_pages = ftd330_obj->size >> FTD330_ALLOC_PAGE_SHIFT;
+	sys_nr_pages = ftd330_obj->size >> PAGE_SHIFT;
+#ifdef CONFIG_PHYTIUM_MMU
+	mmu_nr_pages = ftd330_obj->size >> FTD330_ALLOC_PAGE_SHIFT;
+#endif
 
-	ftd330_obj->pages = kvmalloc_array(nr_pages, sizeof(struct page *), GFP_KERNEL | __GFP_ZERO);
+	ftd330_obj->pages = kvmalloc_array(sys_nr_pages, sizeof(struct page *), GFP_KERNEL | __GFP_ZERO);
 	if (!ftd330_obj->pages) {
 		DRM_DEV_ERROR(dev->dev, "failed to allocate pages.\n");
 		return -ENOMEM;
@@ -142,7 +148,7 @@ static int ftd330_gem_alloc_buf(struct ftd330_gem_object *ftd330_obj)
 					 GFP_KERNEL, ftd330_obj->dma_attrs);
 	if (!ftd330_obj->cookie) {
 #ifdef CONFIG_PHYTIUM_MMU
-		ret = get_pages(nr_pages, ftd330_obj);
+		ret = get_pages(sys_nr_pages, ftd330_obj);
 		if (ret) {
 			DRM_DEV_ERROR(dev->dev, "fail to allocate buffer.\n");
 			goto err_free;
@@ -154,7 +160,7 @@ static int ftd330_gem_alloc_buf(struct ftd330_gem_object *ftd330_obj)
 	}
 #ifdef CONFIG_X86
 	else {
-		ret = set_memory_uc((unsigned long)(ftd330_obj->cookie), nr_pages);
+		ret = set_memory_uc((unsigned long)(ftd330_obj->cookie), sys_nr_pages);
 		if (ret) {
 			DRM_DEV_ERROR(dev->dev, "failed to set_memory_uc.\n");
 			goto err_mem_free;
@@ -163,7 +169,7 @@ static int ftd330_gem_alloc_buf(struct ftd330_gem_object *ftd330_obj)
 #endif
 
 #ifdef CONFIG_PHYTIUM_MMU
-	/* MMU map*/
+	/* MMU map */
 	if (!priv->mmu) {
 		DRM_DEV_ERROR(dev->dev, "invalid mmu.\n");
 		ret = -EINVAL;
@@ -171,12 +177,11 @@ static int ftd330_gem_alloc_buf(struct ftd330_gem_object *ftd330_obj)
 	}
 
 	/* mmu for ree driver */
-	if (!ftd330_obj->get_pages)
-		ret = dc_mmu_map_memory_and_flush(dev, priv->mmu, (u64)ftd330_obj->dma_addr, nr_pages,
-				&mmu_addr, true, false);
-	else
-		ret = dc_mmu_map_memory_and_flush(dev, priv->mmu, (u64)ftd330_obj->pages, nr_pages,
-				&mmu_addr, false, false);
+	ret = dc_mmu_map_memory_and_flush(dev, priv->mmu,
+					  ftd330_obj->get_pages ? ftd330_obj->pages : NULL,
+					  mmu_nr_pages,
+					  ftd330_obj->get_pages ? 0 : (u64)ftd330_obj->dma_addr,
+					  &mmu_addr, false);
 
 	if (ret) {
 		DRM_DEV_ERROR(dev->dev, "failed to do mmu map.\n");
@@ -197,13 +202,13 @@ static int ftd330_gem_alloc_buf(struct ftd330_gem_object *ftd330_obj)
 		}
 
 #if KERNEL_VERSION(5, 12, 0) > LINUX_VERSION_CODE
-		if (drm_prime_sg_to_page_addr_arrays(&sgt, ftd330_obj->pages, NULL, nr_pages)) {
+		if (drm_prime_sg_to_page_addr_arrays(&sgt, ftd330_obj->pages, NULL, sys_nr_pages)) {
 			DRM_DEV_ERROR(dev->dev, "invalid sgtable.\n");
 			ret = -EINVAL;
 			goto err_sgt_free;
 		}
 #else
-		if (drm_prime_sg_to_page_array(&sgt, ftd330_obj->pages, nr_pages)) {
+		if (drm_prime_sg_to_page_array(&sgt, ftd330_obj->pages, sys_nr_pages)) {
 			DRM_DEV_ERROR(dev->dev, "invalid sgtable.\n");
 			ret = -EINVAL;
 			goto err_sgt_free;
@@ -222,7 +227,7 @@ err_mem_free:
 		dma_free_attrs(to_dma_dev(dev), ftd330_obj->size, ftd330_obj->cookie, ftd330_obj->dma_addr,
 			       ftd330_obj->dma_attrs);
 	else
-		put_pages(nr_pages, ftd330_obj);
+		put_pages(sys_nr_pages, ftd330_obj);
 err_free:
 	if (ftd330_obj->pages) {
 		kvfree(ftd330_obj->pages);
@@ -257,12 +262,12 @@ static void ftd330_gem_free_buf(struct ftd330_gem_object *ftd330_obj)
 
 	if (!ftd330_obj->get_pages) {
 #ifdef CONFIG_X86
-		set_memory_wb((unsigned long)(ftd330_obj->cookie), ftd330_obj->size >> FTD330_ALLOC_PAGE_SHIFT);
+		set_memory_wb((unsigned long)(ftd330_obj->cookie), ftd330_obj->size >> PAGE_SHIFT);
 #endif
 		dma_free_attrs(to_dma_dev(dev), ftd330_obj->size, ftd330_obj->cookie,
 			       (dma_addr_t)ftd330_obj->dma_addr, ftd330_obj->dma_attrs);
 	} else {
-		put_pages(ftd330_obj->size >> FTD330_ALLOC_PAGE_SHIFT, ftd330_obj);
+		put_pages(ftd330_obj->size >> PAGE_SHIFT, ftd330_obj);
 	}
 }
 
@@ -287,7 +292,10 @@ static void _ftd330_mmu_free_buf(struct ftd330_gem_object *ftd330_obj)
 static int phytium_gem_alloc_buf(struct ftd330_gem_object *ftd330_obj)
 {
 	struct drm_device *dev = ftd330_obj->base.dev;
-	unsigned int nr_pages;
+	unsigned int sys_nr_pages;
+#ifdef CONFIG_PHYTIUM_MMU
+	unsigned int mmu_nr_pages;
+#endif
 	struct sg_table sgt;
 	int ret = -ENOMEM;
 	struct ftd330_drm_private *priv = dev->dev_private;
@@ -312,9 +320,12 @@ static int phytium_gem_alloc_buf(struct ftd330_gem_object *ftd330_obj)
 	if (!is_iommu_enabled(dev))
 		ftd330_obj->dma_attrs |= DMA_ATTR_FORCE_CONTIGUOUS;
 
-	nr_pages = ftd330_obj->size >> FTD330_ALLOC_PAGE_SHIFT;
+	sys_nr_pages = ftd330_obj->size >> PAGE_SHIFT;
+#ifdef CONFIG_PHYTIUM_MMU
+	mmu_nr_pages = ftd330_obj->size >> FTD330_ALLOC_PAGE_SHIFT;
+#endif
 
-	ftd330_obj->pages = kvmalloc_array(nr_pages, sizeof(struct page *), GFP_KERNEL | __GFP_ZERO);
+	ftd330_obj->pages = kvmalloc_array(sys_nr_pages, sizeof(struct page *), GFP_KERNEL | __GFP_ZERO);
 	if (!ftd330_obj->pages) {
 		DRM_DEV_ERROR(dev->dev, "mem_pool failed to allocate pages.\n");
 		return -ENOMEM;
@@ -330,7 +341,7 @@ static int phytium_gem_alloc_buf(struct ftd330_gem_object *ftd330_obj)
 	}
 
 #ifdef CONFIG_PHYTIUM_MMU
-	/* MMU map*/
+	/* MMU map */
 	if (!priv->mmu) {
 		DRM_DEV_ERROR(dev->dev, "invalid mmu.\n");
 		ret = -EINVAL;
@@ -338,12 +349,11 @@ static int phytium_gem_alloc_buf(struct ftd330_gem_object *ftd330_obj)
 	}
 
 	/* mmu for ree driver */
-	if (!ftd330_obj->get_pages)
-		ret = dc_mmu_map_memory_and_flush(dev, priv->mmu, (u64)ftd330_obj->dma_addr, nr_pages,
-				&mmu_addr, true, false);
-	else
-		ret = dc_mmu_map_memory_and_flush(dev, priv->mmu, (u64)ftd330_obj->pages, nr_pages,
-				 &mmu_addr, false, false);
+	ret = dc_mmu_map_memory_and_flush(dev, priv->mmu,
+					  ftd330_obj->get_pages ? ftd330_obj->pages : NULL,
+					  mmu_nr_pages,
+					  ftd330_obj->get_pages ? 0 : (u64)ftd330_obj->dma_addr,
+					  &mmu_addr, false);
 
 	if (ret) {
 		DRM_DEV_ERROR(dev->dev, "failed to do mmu map.\n");
@@ -354,7 +364,7 @@ static int phytium_gem_alloc_buf(struct ftd330_gem_object *ftd330_obj)
 #else
 	ftd330_obj->iova = (u64)ftd330_obj->dma_addr;
 #endif
-	
+
 	if (!ftd330_obj->get_pages) {
 		ret = dma_get_sgtable_attrs(to_dma_dev(dev), &sgt, ftd330_obj->cookie, ftd330_obj->dma_addr,
 					    ftd330_obj->size, ftd330_obj->dma_attrs);
@@ -364,13 +374,13 @@ static int phytium_gem_alloc_buf(struct ftd330_gem_object *ftd330_obj)
 		}
 
 #if LINUX_VERSION_CODE < KERNEL_VERSION(5, 12, 0)
-		if (drm_prime_sg_to_page_addr_arrays(&sgt, ftd330_obj->pages, NULL, nr_pages)) {
+		if (drm_prime_sg_to_page_addr_arrays(&sgt, ftd330_obj->pages, NULL, sys_nr_pages)) {
 			DRM_DEV_ERROR(dev->dev, "invalid sgtable.\n");
 			ret = -EINVAL;
 			goto err_sgt_free;
 		}
 #else
-		if (drm_prime_sg_to_page_array(&sgt, ftd330_obj->pages, nr_pages)) {
+		if (drm_prime_sg_to_page_array(&sgt, ftd330_obj->pages, sys_nr_pages)) {
 			DRM_DEV_ERROR(dev->dev, "invalid sgtable.\n");
 			ret = -EINVAL;
 			goto err_sgt_free;
@@ -390,7 +400,7 @@ err_mem_free:
 			gen_pool_free(priv->mem_pool, (unsigned long)ftd330_obj->cookie, ftd330_obj->size);
 		}
 	} else
-		put_pages(nr_pages, ftd330_obj);
+		put_pages(sys_nr_pages, ftd330_obj);
 err_free:
 	if (ftd330_obj->pages) {
 		kvfree(ftd330_obj->pages);
@@ -427,7 +437,7 @@ static void phytium_gem_free_buf(struct ftd330_gem_object *ftd330_obj)
 	if (!ftd330_obj->get_pages)
 		gen_pool_free(priv->mem_pool, (unsigned long)ftd330_obj->cookie, ftd330_obj->size);
 	else
-		put_pages(ftd330_obj->size >> FTD330_ALLOC_PAGE_SHIFT, ftd330_obj);
+		put_pages(ftd330_obj->size >> PAGE_SHIFT, ftd330_obj);
 
 }
 
@@ -708,9 +718,9 @@ struct sg_table *ftd330_gem_prime_get_sg_table(struct drm_gem_object *obj)
 	struct ftd330_gem_object *ftd330_obj = to_ftd330_gem_object(obj);
 
 #if KERNEL_VERSION(5, 10, 0) <= LINUX_VERSION_CODE
-	return drm_prime_pages_to_sg(obj->dev, ftd330_obj->pages, ftd330_obj->size >> FTD330_ALLOC_PAGE_SHIFT);
+	return drm_prime_pages_to_sg(obj->dev, ftd330_obj->pages, ftd330_obj->size >> PAGE_SHIFT);
 #else
-	return drm_prime_pages_to_sg(ftd330_obj->pages, ftd330_obj->size >> FTD330_ALLOC_PAGE_SHIFT);
+	return drm_prime_pages_to_sg(ftd330_obj->pages, ftd330_obj->size >> PAGE_SHIFT);
 #endif
 }
 
@@ -797,7 +807,9 @@ struct drm_gem_object *ftd330_gem_prime_import_sg_table(struct drm_device *dev,
 						    struct sg_table *sgt)
 {
 	struct ftd330_gem_object *ftd330_obj;
-	int npages;
+#ifdef CONFIG_PHYTIUM_MMU
+	int mmu_nr_pages;
+#endif
 	int ret;
 	size_t size = attach->dmabuf->size;
 #ifndef CONFIG_PHYTIUM_MMU
@@ -843,25 +855,10 @@ struct drm_gem_object *ftd330_gem_prime_import_sg_table(struct drm_device *dev,
 	}
 #endif
 
-	npages = ftd330_obj->size >> FTD330_ALLOC_PAGE_SHIFT;
-	ftd330_obj->pages = kvmalloc_array(npages, sizeof(struct page *), GFP_KERNEL);
-	if (!ftd330_obj->pages) {
-		ret = -ENOMEM;
-		goto err;
-	}
-
-#if KERNEL_VERSION(5, 12, 0) > LINUX_VERSION_CODE
-	ret = drm_prime_sg_to_page_addr_arrays(sgt, ftd330_obj->pages, NULL, npages);
-#else
-	ret = drm_prime_sg_to_page_array(sgt, ftd330_obj->pages, npages);
-#endif
-
-	if (ret)
-		goto err_free_page;
-
 #ifdef CONFIG_PHYTIUM_MMU
-	ret = dc_mmu_map_memory_and_flush(dev, priv->mmu, (u64)ftd330_obj->pages, npages, &iova, false,
-				false);
+	mmu_nr_pages = ftd330_obj->size >> FTD330_ALLOC_PAGE_SHIFT;
+
+	ret = dc_mmu_map_sg_table_and_flush(dev, priv->mmu, sgt, mmu_nr_pages, &iova, false);
 	if (ret) {
 		DRM_ERROR("failed to do mmu map.\n");
 		goto err;
@@ -875,11 +872,6 @@ struct drm_gem_object *ftd330_gem_prime_import_sg_table(struct drm_device *dev,
 
 	return &ftd330_obj->base;
 
-err_free_page:
-	if (ftd330_obj->pages) {
-		kvfree(ftd330_obj->pages);
-		ftd330_obj->pages = NULL;
-	}
 err:
 	ftd330_gem_free_object(&ftd330_obj->base);
 
