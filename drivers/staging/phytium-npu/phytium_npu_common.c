@@ -41,6 +41,35 @@ struct phytium_npu_dev *phytium_npu_get_npudev(void)
 	return gnpu_dev;
 }
 
+void phytium_npu_load_mark_start(struct phytium_npu_dev *npu)
+{
+	unsigned long flags;
+
+	spin_lock_irqsave(&npu->spin_irq_lock, flags);
+	if (npu->is_busy) {
+		spin_unlock_irqrestore(&npu->spin_irq_lock, flags);
+		return;
+	}
+	npu->busy_start = ktime_get();
+	npu->is_busy = true;
+
+	spin_unlock_irqrestore(&npu->spin_irq_lock, flags);
+}
+
+void phytium_npu_load_mark_done(struct phytium_npu_dev *npu)
+{
+	ktime_t busy;
+
+	if (!npu->is_busy)
+		return;
+
+	busy = ktime_sub(ktime_get(), npu->busy_start);
+	if (busy > 0)
+		npu->total_busy_time = ktime_add(npu->total_busy_time, busy);
+
+	npu->is_busy = false;
+}
+
 static void phytium_npu_mmu_config_init(struct phytium_npu_dev *npu_dev)
 {
 	npu_dev->nmmu_config.width = NPU_MMU_40BIT;
@@ -252,6 +281,7 @@ void phytium_npu_try_resume_work(struct phytium_npu_dev *npudev)
 		phytium_npu_resume(npudev);
 		npudev->power_status = NPU_STATE_ON;
 		npudev->load_status = 100;
+		npudev->up_start = ktime_get();
 	}
 }
 
@@ -267,6 +297,7 @@ static void phytium_npu_runtime_suspend_work(struct work_struct *work)
 		phytium_npu_suspend(npudev);
 		npudev->power_status = NPU_STATE_OFF;
 		npudev->load_status = NPU_STATE_OFF;
+		npudev->total_busy_time = 0;
 	} else {
 		pr_info("NPU is poweroff");
 	}
@@ -294,6 +325,9 @@ static int phytium_npu_common_init(struct phytium_npu_dev *npu)
 	npu->power_status = NPU_STATE_OFF;
 	npu->load_status = NPU_STATE_OFF;
 	npu->voltage_val = 0;
+	npu->total_busy_time = 0;
+	npu->is_busy = false;
+
 	phytium_npu_try_resume_work(npu);
 	phytium_npu_mmu_config_init(npu);
 	phytium_npu_mmu_dev_init(npu, npu->nmmu_config.page_size);
@@ -604,6 +638,7 @@ int phytium_npu_handle_irq(struct device *dev)
 
 	phytium_npu_clear_irq_status(npu_dev, status);
 	spin_lock(&npu_dev->spin_irq_lock);
+	phytium_npu_load_mark_done(npu_dev);
 	npu_dev->irq_status = status & irq_mask;
 	spin_unlock(&npu_dev->spin_irq_lock);
 	dev_dbg(npu_dev->dev, "irq status (%#x), bottom status:%#x", status, npu_dev->irq_status);

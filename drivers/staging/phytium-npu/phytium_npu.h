@@ -5,6 +5,7 @@
 #ifndef __PHYTIUM_NPU_H__
 #define __PHYTIUM_NPU_H__
 #include <linux/list.h>
+#include <linux/ktime.h>
 #include <linux/spinlock.h>
 #include <linux/miscdevice.h>
 #include <linux/iosys-map.h>
@@ -107,6 +108,10 @@ struct phytium_npu_dev {
 	int load_status;
 	int voltage_val;
 	int clock_freq;
+	ktime_t		up_start;
+	ktime_t		busy_start;
+	ktime_t		total_busy_time;
+	bool		is_busy;
 	void __iomem *reg_base;
 	void __iomem *power_reg_base;
 	struct timespec64 ts;
@@ -214,4 +219,7 @@ int phytium_npu_common_resume(struct device *dev);
 int phytium_npu_common_suspend(struct device *dev);
 void phytium_npu_get_time_span(struct timespec64 *start, struct timespec64 *end,
 			       struct timespec64 *span);
+void phytium_npu_load_mark_start(struct phytium_npu_dev *npu);
+void phytium_npu_load_mark_done(struct phytium_npu_dev *npu);
+
 #endif

@@ -163,6 +163,7 @@ void phytium_npu_config_start_inference(struct phytium_npu_dev *npudev,
 	ctrl |= (priority << 8);
 	ctrl |= (sess->mmu_ctx[NPU_MMU_CONTEXT_MODULE_ID].context_id << 12);
 	REGWRITE32(npudev, NPU_CH0_CONTROL, ctrl);
+	phytium_npu_load_mark_start(npudev);
 	pr_debug("%s start npu :%#x", __func__, ctrl);
 }
 

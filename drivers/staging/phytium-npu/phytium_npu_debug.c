@@ -6,6 +6,10 @@
 #include <linux/debugfs.h>
 #include <linux/iosys-map.h>
 #include <linux/dma-buf.h>
+#include <linux/seq_file.h>
+#include <linux/ktime.h>
+#include <linux/timekeeping.h>
+#include <linux/math64.h>
 #include "phytium_npu.h"
 #include "phytium_npu_mmu.h"
 #include "linux/phytium_npu_dma_buf_heap.h"
@@ -55,6 +59,42 @@ void phytium_npu_get_time_span(struct timespec64 *start,
 		(uint64_t)span->tv_sec * 1000000000ULL +
 		(uint64_t)span->tv_nsec);
 }
+
+static int npu_load_show(struct seq_file *m, void *v)
+{
+	struct phytium_npu_dev *npu = m->private;
+	unsigned long flags;
+	ktime_t now = 0, elapsed = 0, busy = 0;
+	u32 percent = 0;
+
+	spin_lock_irqsave(&npu->spin_irq_lock, flags);
+
+	if (npu->power_status == NPU_STATE_ON) {
+		now = ktime_get();
+
+		if (npu->is_busy) {
+			busy = ktime_sub(now, npu->busy_start);
+			npu->total_busy_time = ktime_add(npu->total_busy_time, busy);
+			npu->busy_start = now;
+		}
+
+		busy = npu->total_busy_time;
+		elapsed = ktime_sub(now, npu->up_start);
+		if (elapsed > 0) {
+			percent = (u32)div64_u64((u64)busy * 100, (u64)elapsed);
+		}
+
+		npu->up_start = now;
+	}
+
+	npu->total_busy_time = 0;
+	spin_unlock_irqrestore(&npu->spin_irq_lock, flags);
+
+	seq_printf(m, "%u%%\n", percent);
+	return 0;
+}
+
+DEFINE_SHOW_ATTRIBUTE(npu_load);
 
 int phytiun_npu_check_debug_fs_cfg(struct phytium_npu_session *sess)
 {
@@ -260,8 +300,8 @@ void phytium_npu_debugfs_init(struct phytium_npu_dev *npu)
 		pr_err("%s: Failed to create debug %s directory", __func__, npu->miscdev.name);
 		return;
 	}
-	debugfs_create_x32("load", 0444, npu->dbgfs_root_dir,
-			   &npu->load_status);
+	debugfs_create_file("load", 0444, npu->dbgfs_root_dir, npu,
+		    &npu_load_fops);
 	debugfs_create_x32("config_cluster", 0444, npu->dbgfs_root_dir,
 			   &npu->power_status);
 	debugfs_create_x32("clk", 0444, npu->dbgfs_root_dir,
