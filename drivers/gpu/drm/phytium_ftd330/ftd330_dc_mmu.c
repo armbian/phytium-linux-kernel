@@ -796,6 +796,7 @@ int dc_mmu_map_sg_table_and_flush(struct drm_device *dev, dc_mmu_pt mmu, struct 
 	struct scatterlist *sgl;
 	u32 virtual_address, i;
 	u32 allocated_pages = 0;
+	bool allocated = false;
 	int ret = 0;
 
 	dc = dc_mmu_get_dc(dev);
@@ -808,6 +809,7 @@ int dc_mmu_map_sg_table_and_flush(struct drm_device *dev, dc_mmu_pt mmu, struct 
 		goto on_error;
 
 	*address = virtual_address;
+	allocated = true;
 
 	dc_mmu_fill_mtlb(mmu, virtual_address, page_count, security);
 
@@ -840,12 +842,23 @@ int dc_mmu_map_sg_table_and_flush(struct drm_device *dev, dc_mmu_pt mmu, struct 
 		}
 	}
 
+	/* The SG table must provide a page for every virtual page we
+	 * reserved; otherwise the tail entries would remain non-present
+	 * while the caller believes the whole buffer is mapped.
+	 */
+	if (allocated_pages != page_count) {
+		pr_err("%s: sg table provides %u pages, expected %u\n",
+		       __func__, allocated_pages, page_count);
+		ret = -EINVAL;
+		goto on_error;
+	}
+
 	dc_hw_mmu_flush(&dc->hw);
 	return 0;
 
 on_error:
-	if (allocated_pages > 0)
-		dc_mmu_free_pages(mmu, *address, allocated_pages);
+	if (allocated)
+		dc_mmu_free_pages(mmu, *address, page_count);
 	return ret;
 }
 
