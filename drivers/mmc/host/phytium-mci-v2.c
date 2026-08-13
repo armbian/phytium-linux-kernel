@@ -194,9 +194,11 @@ static void
 phytium_mci_data_sg_write_2_admc_table(struct phytium_mci_host *host, struct mmc_data *data)
 {
 	struct phytium_adma2_64_desc *desc;
-	u32 dma_len, i;
+	u32 dma_len, i, offset, chunk_len;
 	dma_addr_t dma_address;
 	struct scatterlist *sg;
+	bool first = true;
+	bool last;
 
 	phytium_mci_init_adma_table(host, &host->dma);
 
@@ -205,22 +207,43 @@ phytium_mci_data_sg_write_2_admc_table(struct phytium_mci_host *host, struct mmc
 		dma_address = sg_dma_address(sg);
 		dma_len = sg_dma_len(sg);
 
-		if (i == 0) {
-			if (sg_is_last(sg) || (data->sg_count == 1 && dma_len == SD_BLOCK_SIZE))
-				phytium_mci_adma_write_desc(host, desc, dma_address,
-							     dma_len, 0x8000000c);
-			else
-				phytium_mci_adma_write_desc(host, desc, dma_address,
-							     dma_len, 0x8000001a);
-		} else if (sg_is_last(sg)) {
-			phytium_mci_adma_write_desc(host, desc, dma_address,
-						     dma_len, 0x80000004);
-		} else {
-			phytium_mci_adma_write_desc(host, desc, dma_address,
-						     dma_len, 0x80000012);
-		}
+		/*
+		 * The block layer clamps max_seg_size up to PAGE_SIZE (64K on a
+		 * 64K page kernel), so a single scatterlist entry can be larger
+		 * than what one ADMA descriptor is able to transfer. Split each
+		 * entry into MCI_ADMA_MAX_DESC_SIZE chunks, one descriptor per
+		 * chunk.
+		 */
+		offset = 0;
+		while (offset < dma_len) {
+			if (WARN_ON_ONCE(desc - host->dma.adma_table >= MAX_BD_NUM))
+				return;
 
-		desc++;
+			chunk_len = min_t(u32, dma_len - offset,
+					  MCI_ADMA_MAX_DESC_SIZE);
+			last = sg_is_last(sg) && (offset + chunk_len == dma_len);
+
+			if (first && last)
+				phytium_mci_adma_write_desc(host, desc,
+							    dma_address + offset,
+							    chunk_len, 0x8000000c);
+			else if (first)
+				phytium_mci_adma_write_desc(host, desc,
+							    dma_address + offset,
+							    chunk_len, 0x8000001a);
+			else if (last)
+				phytium_mci_adma_write_desc(host, desc,
+							    dma_address + offset,
+							    chunk_len, 0x80000004);
+			else
+				phytium_mci_adma_write_desc(host, desc,
+							    dma_address + offset,
+							    chunk_len, 0x80000012);
+
+			first = false;
+			offset += chunk_len;
+			desc++;
+		}
 	}
 }
 
