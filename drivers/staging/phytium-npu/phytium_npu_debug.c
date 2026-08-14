@@ -245,18 +245,16 @@ void phytium_npu_debug_set_hw_register(struct phytium_npu_dev *npu,
 		}
 
 		if (dbg->debug_type & DEBUG_FILE_MODE_PERF) {
-			if (dbg->debug_type & DEBUG_TYPE_PERF_STREAM) {
-				switch (dbg->debug_type & 0xF00) {
-				case DEBUG_TYPE_PERF_STREAM:
-					perf_dbg |= DEBUG_PERF_S;
-				break;
-				case DEBUG_TYPE_PERF_LAYER:
-					perf_dbg |= DEBUG_PERF_L;
-				break;
-				case DEBUG_TYPE_PERF_PASS:
-					perf_dbg |= DEBUG_PERF_P;
-				break;
-				}
+			switch (dbg->debug_type & 0xF00) {
+			case DEBUG_TYPE_PERF_STREAM:
+				perf_dbg |= DEBUG_PERF_S;
+			break;
+			case DEBUG_TYPE_PERF_LAYER:
+				perf_dbg |= DEBUG_PERF_L;
+			break;
+			case DEBUG_TYPE_PERF_PASS:
+				perf_dbg |= DEBUG_PERF_P;
+			break;
 			}
 		}
 
