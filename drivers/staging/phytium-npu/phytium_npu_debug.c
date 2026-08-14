@@ -222,7 +222,8 @@ void phytium_npu_debug_set_hw_register(struct phytium_npu_dev *npu,
 		if (dbg->debug_type & DEBUG_TYPE_REG_BAND) {
 			REGWRITE32(npu, NPU_CACHE_RESET, DEBUG_BAND_COUNT_RESET);
 			REGWRITE32(npu, NPU_CACHE_REQ_CNT_EN, DEBUG_BAND_EN);
-		} else if (dbg->debug_type & DEBUG_TYPE_REG_PERF) {
+		}
+		if (dbg->debug_type & DEBUG_TYPE_REG_PERF) {
 			REGWRITE32(npu, NPU_PERF_RESET, DEBUG_PERFORMANCE_COUNT_RESET);
 			REGWRITE32(npu, NPU_PERF_ENABLE, DEBUG_PERFORMANCE_EN);
 		} else {
