@@ -1,0 +1,43 @@
+name: "Sync linux-6.6 from Gitee"
+
+# Keep the linux-6.6 branch in sync with the upstream Phytium kernel on Gitee.
+# The heavy clone/push runs on GitHub's runners, not a maintainer's machine.
+on:
+  schedule:
+    - cron: "17 4 * * *"   # daily, 04:17 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: sync-mirror
+  cancel-in-progress: false
+
+env:
+  UPSTREAM: "https://gitee.com/phytium_embedded/phytium-linux-kernel.git"
+  BRANCH: "linux-6.6"
+
+jobs:
+  sync:
+    if: ${{ github.repository_owner == 'armbian' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - name: "Mirror ${{ env.BRANCH }} from upstream"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          # Bare, single-branch clone of just the branch we mirror (full history).
+          git clone --bare --single-branch --branch "${BRANCH}" "${UPSTREAM}" repo.git
+          cd repo.git
+
+          # Force-update only refs/heads/<BRANCH> on this repo. No --mirror / --prune,
+          # so the default 'armbian-mirror' branch (and this workflow) is left untouched.
+          git push --force \
+            "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" \
+            "refs/heads/${BRANCH}:refs/heads/${BRANCH}"
+
+          echo "Mirrored ${BRANCH}: $(git rev-parse "${BRANCH}")" >> "$GITHUB_STEP_SUMMARY"
