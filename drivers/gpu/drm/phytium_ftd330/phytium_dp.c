@@ -3037,12 +3037,29 @@ void phytium_display_power_request(struct ftd330_drm_private *priv, bool enable,
 		power_status = false;
 	}
 
-	if (enable && power_status) {
-		return;
-	}
+	/* Short-circuit only when the domain is NOT managed by genpd/SCMI.
+	 * For the SE doorbell and ACPI paths there is no runtime PM usage
+	 * counter, so skipping a redundant hardware request when the power
+	 * state already matches is the intended optimization.
+	 *
+	 * For the SCMI/genpd path (priv->dev_pm.attached) this short-circuit
+	 * must NOT be applied: pm_runtime_get_sync()/put_sync() need to run on
+	 * every request to keep the runtime PM usage counter balanced. If a
+	 * "power on" request is skipped here while the device happens to read
+	 * back as powered, the counter never gets incremented; genpd may then
+	 * autosuspend the domain once it becomes idle, which on S3 resume
+	 * happens right after the atomic commit. The resulting domain power
+	 * cycle raises the DPLP power-up interrupt whose handler runs
+	 * phytium_display_power_request_on() -> phytium_dc_registers_init() ->
+	 * dc_hw_do_reset(), wiping the display mode / framebuffer registers
+	 * just written by the commit, leaving the screen black.
+	 */
+	if (!priv->dev_pm.attached) {
+		if (enable && power_status)
+			return;
 
-	if (!enable && !power_status) {
-		return;
+		if (!enable && !power_status)
+			return;
 	}
 
 	FTD330_LOG_TRACE;

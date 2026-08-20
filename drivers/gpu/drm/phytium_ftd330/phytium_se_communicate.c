@@ -90,7 +90,7 @@ void phytium_display_power_request_se(struct ftd330_drm_private *priv, bool enab
 		if (priv->dev_pm.num_domains > 1) {
 			if (enable) {
 				ret = pm_runtime_get_sync(priv->dev_pm.pd_dev[display_id]);
-				if (ret) {
+				if (ret < 0) {
 					DRM_ERROR("Failed to power on DC-%d domain\n", display_id);
 					goto send_power_request_se;
 				} else {
@@ -99,7 +99,7 @@ void phytium_display_power_request_se(struct ftd330_drm_private *priv, bool enab
 			}
 			else {
 				ret = pm_runtime_put_sync(priv->dev_pm.pd_dev[display_id]);
-				if (ret) {
+				if (ret < 0) {
 					DRM_ERROR("Failed to power off DC-%d domain\n", display_id);
 					goto send_power_request_se;
 				} else {
@@ -109,7 +109,7 @@ void phytium_display_power_request_se(struct ftd330_drm_private *priv, bool enab
 		} else if (priv->dev_pm.num_domains == 1) {
 			if (enable) {
 				ret = pm_runtime_get_sync(priv->dc_dev);
-				if (ret) {
+				if (ret < 0) {
 					DRM_ERROR("Failed to power on DC domain\n");
 					goto send_power_request_se;
 				} else {
@@ -117,7 +117,7 @@ void phytium_display_power_request_se(struct ftd330_drm_private *priv, bool enab
 				}
 			} else {
 				ret = pm_runtime_put_sync(priv->dc_dev);
-				if (ret) {
+				if (ret < 0) {
 					DRM_ERROR("Failed to power off DC domain\n");
 					goto send_power_request_se;
 				} else {
