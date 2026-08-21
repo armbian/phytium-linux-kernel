@@ -23,6 +23,8 @@
 
 #define MAX_BD_NUM		128
 #define SD_BLOCK_SIZE		512
+/* Each ADMA descriptor can transfer up to 4KB of data in chained mode */
+#define MCI_ADMA_MAX_DESC_SIZE	4096
 
 #define MCI_BUS_1BITS          0x0
 #define MCI_BUS_4BITS          0x1
