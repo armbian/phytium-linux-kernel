@@ -41,3 +41,20 @@ jobs:
             "refs/heads/${BRANCH}:refs/heads/${BRANCH}"
 
           echo "Mirrored ${BRANCH}: $(git rev-parse "${BRANCH}")" >> "$GITHUB_STEP_SUMMARY"
+
+  # GitHub disables a repository's scheduled workflows after 60 days without
+  # activity, and the only thing that happens here is this workflow pushing with
+  # GITHUB_TOKEN - which does not count. Left alone the daily sync switches
+  # itself off and the mirror silently goes stale, taking phytium kernel builds
+  # with it. This re-arms the schedule on every run, the same way
+  # armbian/docker-armbian-build does.
+  keepalive:
+    if: ${{ github.repository_owner == 'armbian' }}
+    name: Keep Alive
+    needs: sync
+    runs-on: ubuntu-latest
+    permissions:
+      actions: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: liskin/gh-workflow-keepalive@f72ff1a1336129f29bf0166c0fd0ca6cf1bcb38c # v1.2.1
