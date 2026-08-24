@@ -485,7 +485,6 @@ static int phytium_gdma_terminate_all(struct dma_chan *chan)
 
 	if (gdma_chan->desc) {
 		vchan_terminate_vdesc(&gdma_chan->desc->vdesc);
-		phytium_gdma_vdesc_free(&gdma_chan->desc->vdesc);
 		gdma_chan->desc = NULL;
 		phytium_chan_disable(gdma_chan);
 		phytium_chan_reset(gdma_chan);
