@@ -504,7 +504,7 @@ static void phytium_npu_update_stream_buf_status(struct phytium_npu_stream *nstr
 	struct npu_mctx_map *nmmap;
 	size_t i;
 
-	for (i = 0; i < estream->in; i++) {
+	for (i = estream->in; i < estream->all; i++) {
 		nmmap = phytium_npu_find_mmu_ctx_map(nstream->session, estream->fd[i]);
 		if (nmmap) {
 			phytium_npu_set_dma_buf_status(nmmap->dma_buf->priv, NPU_BUF_UPDATED_BY_HW);
