@@ -112,6 +112,10 @@ int phytium_npu_try_activate_stream(struct phytium_npu_dev *npu,
 				    struct phytium_npu_session *sess,
 							struct phytium_npu_stream *stream)
 {
+	if (!phytium_npu_check_stream_buf_is_ready(stream)) {
+		return NEED_SCHEDULE;
+	}
+
 	if (!npu->is_cache_stream_on) {
 		if (npu->activated_stream)
 			return NEED_SCHEDULE;
@@ -326,16 +330,6 @@ static struct phytium_npu_stream *phytium_npu_is_working_full(struct phytium_npu
 	return npu->activated_stream;
 }
 
-static int phytium_npu_stream_is_ready_for_inference(struct phytium_npu_stream *nstream,
-						     struct npu_user_submit_stream *nustream)
-{
-	if (nstream->stream_status > NPU_STREAM_NONE)
-		return NPU_STREAM_BUFF_IN_HW;
-	if (!phytium_npu_check_stream_buf_is_ready(nstream))
-		return NPU_STREAM_BUFF_NO_READY;
-	return 0;
-}
-
 void do_work(struct work_struct *work)
 {
 	struct phytium_npu_dev *npu = container_of(work, struct phytium_npu_dev, stream_work);
@@ -364,11 +358,6 @@ void do_work(struct work_struct *work)
 				nustream = &curr_stream->nustream;
 				pr_debug("estream type:%#x", nustream->estream.stype);
 				if (nustream->estream.stype == NPU_STREAM_SUBMIT) {
-					ret = phytium_npu_stream_is_ready_for_inference(curr_stream,
-											nustream);
-					pr_debug("strem is ready:%d", ret);
-					if (ret)/* current stream is not ready */
-						continue;
 					ret = phytium_npu_try_activate_stream(npu,
 									      curr_sess,
 									      curr_stream);
