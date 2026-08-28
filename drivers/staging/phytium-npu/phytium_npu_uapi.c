@@ -246,6 +246,12 @@ static int phytium_npu_mm_set_buf(struct phytium_npu_dev *npu,
 	if (ret)
 		return ret;
 	phytium_npu_set_stream_buf_status_with_fd(sess, sbuf->fd, sbuf->set_state);
+
+	if (sbuf->is_output_sync &&
+		sbuf->set_state == NPU_BUF_UPDATED_BY_SW) {
+		phytium_npu_schedule_stream_queues(npu, true);
+	}
+
 	mutex_unlock(&npu->mutex_lock);
 	return 0;
 }
