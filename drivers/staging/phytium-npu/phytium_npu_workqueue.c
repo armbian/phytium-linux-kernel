@@ -138,14 +138,46 @@ activate_stream:
 	return phytium_npu_submit_stream(npu, sess, stream);
 }
 
+static inline bool phytium_npu_has_mmu_conflict(struct phytium_npu_session *active_sess,
+						struct phytium_npu_session *new_sess)
+{
+	size_t i;
+
+	/*
+	 * Collision occurs when two sessions share the same hardware context ID
+	 * but own distinct page catalog physical base addresses.
+	 */
+	for (i = 0; i < ARRAY_SIZE(active_sess->mmu_ctx); i++) {
+		struct phytium_npu_mmu_context *active_ctx = &active_sess->mmu_ctx[i];
+		struct phytium_npu_mmu_context *new_ctx = &new_sess->mmu_ctx[i];
+
+		if (active_ctx->context_id == new_ctx->context_id &&
+		    active_ctx->pc_base_phys_addr != new_ctx->pc_base_phys_addr)
+			return true;
+	}
+
+	return false;
+}
+
 static int phytium_npu_try_queued_stream(struct phytium_npu_dev *npu,
 					 struct phytium_npu_session *sess,
 								struct phytium_npu_stream *stream)
 {
+	struct phytium_npu_stream *active_stream = npu->activated_stream;
+	struct phytium_npu_session *active_sess;
+
 	if (!npu->is_cache_stream_on)
 		return 1;
+	if (active_stream && !npu->queued_stream) {
+		active_sess = active_stream->session;
 
-	if (npu->activated_stream && !npu->queued_stream) {
+		/*
+		 * If a stream is currently executing in hardware, verify that
+		 * updating the MMU registers will not clash with the active stream.
+		 */
+		if (phytium_npu_has_mmu_conflict(active_sess, sess))
+			return 1;
+
 		stream->stream_status = NPU_STREAM_NONE;
 		stream->infer_status = NPU_STREAM_INFER_WAIT;
 		npu->queued_stream = stream;
