@@ -23,12 +23,6 @@
 #include <linux/pm_runtime.h>
 #include <linux/iopoll.h>
 
-#define KEEP_CAN_FIFO_MIN_LEN 16
-#define KEEP_CANFD_FIFO_MIN_LEN	128
-#define CAN_FIFO_BYTE_LEN 256
-#define STOP_QUEUE_TRUE		1
-#define STOP_QUEUE_FALSE	0
-
 enum phytium_can_ip_type {
 	PHYTIUM_CAN = 0,
 	PHYTIUM_CANFD,
@@ -47,19 +41,15 @@ struct phytium_can_dev {
 	struct device *dev;
 	struct clk *clk;
 
-	struct sk_buff *tx_skb;
-
 	const struct can_bittiming_const *bit_timing;
 	spinlock_t lock;		/*spinlock*/
 	int fdmode;
 	u32 isr;
 	u32 tx_fifo_depth;
-	unsigned int is_stop_queue_flag;
 	void __iomem *base;
 
 	struct timer_list	timer;          /* xmit done timer */
 	u32 is_tx_done;
-	u32 is_need_stop_xmit;
 };
 
 struct phytium_can_dev *phytium_can_allocate_dev(struct device *dev, int sizeof_priv,

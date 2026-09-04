@@ -143,7 +143,6 @@ enum phytium_can_reg {
 
 /* FIFO counter register (FIFO_CNT) */
 #define FIFO_CNT_RFN		GENMASK(6, 0)	/* Receive FIFO valid data number */
-#define FIFO_CNT_TFN		GENMASK(22, 16)	/* Transmit FIFO valid data number */
 
 /* DMA request control register (DMA_CTRL) */
 #define DMA_CTRL_RFTH		GENMASK(5, 0)	/* Receive FIFO DMA request threshold */
@@ -441,15 +440,22 @@ static int phytium_can_poll(struct napi_struct *napi, int quota)
 	return work_done;
 }
 
-static void phytium_can_write_frame(struct phytium_can_dev *cdev)
+static void phytium_can_write_frame(struct phytium_can_dev *cdev,
+				    const struct canfd_frame *cf,
+				    bool is_canfd)
 {
-	struct canfd_frame *cf = (struct canfd_frame *)cdev->tx_skb->data;
 	struct net_device *dev = cdev->net;
-	struct sk_buff *skb = cdev->tx_skb;
 	u32 i, id, dlc = 0, frame_head[2] = {0, 0};
 	u32 data_len;
 
 	data_len = can_fd_len2dlc(cf->len);
+
+	/* This frame becomes the only one in flight.  Drop any completion that
+	 * is still latched for an earlier frame, so that once is_tx_done is
+	 * cleared below a late TEIS cannot be mistaken for this frame's
+	 * completion.  Called with cdev->lock held.
+	 */
+	phytium_can_set_reg_bits(cdev, CAN_INTR, INTR_TEIC | INTR_TFIC);
 
 	/* Watch carefully on the bit sequence */
 	if (cf->can_id & CAN_EFF_FLAG) {
@@ -467,8 +473,7 @@ static void phytium_can_write_frame(struct phytium_can_dev *cdev)
 		if (cf->can_id & CAN_RTR_FLAG)
 			/* Extended frames remote TX request */
 			id |= CAN_ID2_RTR_MASK;
-		if ((cdev->can.ctrlmode & CAN_CTRLMODE_FD) &&
-		    can_is_canfd_skb(skb))
+		if ((cdev->can.ctrlmode & CAN_CTRLMODE_FD) && is_canfd)
 			dlc = data_len << CANFD_ID2_DLC_OFF;
 		else
 			dlc = data_len << CAN_ID2_DLC_OFF;
@@ -532,7 +537,6 @@ static void phytium_can_write_frame(struct phytium_can_dev *cdev)
 	}
 
 	cdev->is_tx_done = false;
-	cdev->is_need_stop_xmit = true;
 	mod_timer(&cdev->timer, jiffies + HZ / 10);
 
 	netdev_dbg(dev, "Trigger send message!\n");
@@ -540,18 +544,49 @@ static void phytium_can_write_frame(struct phytium_can_dev *cdev)
 	return;
 }
 
-static netdev_tx_t phytium_can_tx_handler(struct phytium_can_dev *cdev)
+static netdev_tx_t phytium_can_tx_handler(struct phytium_can_dev *cdev,
+					  struct sk_buff *skb)
 {
 	struct net_device *dev = cdev->net;
-	struct sk_buff *skb = cdev->tx_skb;
+	struct canfd_frame cf = { };
+	bool is_canfd = can_is_canfd_skb(skb);
+	unsigned long flags;
+	int err;
 
 	/* This controller only reports a frame-end status bit, not a completed
 	 * FIFO slot/index.  Keep a single skb in flight so TEIS maps exactly to
 	 * echo slot 0, like other single-completion CAN controllers.
 	 */
+	spin_lock_irqsave(&cdev->lock, flags);
+
 	netif_stop_queue(dev);
-	can_put_echo_skb(skb, dev, 0, 0);
-	phytium_can_write_frame(cdev);
+	memcpy(&cf, skb->data, skb->len);
+
+	/*
+	 * can_put_echo_skb() consumes @skb, including on its -EBUSY and
+	 * -ENOMEM paths.  Keep a private frame copy so echo ownership can be
+	 * transferred before the FIFO is programmed without dereferencing a
+	 * consumed skb afterwards.
+	 */
+	err = can_put_echo_skb(skb, dev, 0, 0);
+	if (err) {
+		/* Do not push a frame to the controller without an echo entry. */
+		netdev_err(dev, "failed to reserve TX echo slot: %d\n", err);
+		dev->stats.tx_dropped++;
+		/* -EINVAL is the sole can_put_echo_skb() error which leaves skb
+		 * owned by the caller.  It is not expected for fixed echo slot 0.
+		 */
+		if (err == -EINVAL)
+			dev_kfree_skb_any(skb);
+		netif_wake_queue(dev);
+
+		spin_unlock_irqrestore(&cdev->lock, flags);
+		return NETDEV_TX_OK;
+	}
+
+	phytium_can_write_frame(cdev, &cf, is_canfd);
+
+	spin_unlock_irqrestore(&cdev->lock, flags);
 
 	return NETDEV_TX_OK;
 }
@@ -570,17 +605,21 @@ static void phytium_can_tx_interrupt(struct net_device *ndev, u32 isr)
 	if (isr & INTR_TEIS)
 		phytium_can_set_reg_bits(cdev, CAN_INTR, INTR_TEIC);
 
-	len = can_get_echo_skb(ndev, 0, NULL);
-	if (len) {
-		stats->tx_bytes += len;
-		stats->tx_packets++;
-	} else {
-		netdev_warn(ndev, "TX interrupt without echo skb\n");
+	/* A timeout resets the controller and discards its TX FIFO before the
+	 * queue is reopened.  A completion observed afterwards is therefore
+	 * stale and must never consume a newly installed echo skb.
+	 */
+	if (cdev->is_tx_done) {
+		if (netif_queue_stopped(ndev))
+			netif_wake_queue(ndev);
+		return;
 	}
 
-	cdev->tx_skb = NULL;
+	len = can_get_echo_skb(ndev, 0, NULL);
+	stats->tx_bytes += len;
+	stats->tx_packets++;
+
 	cdev->is_tx_done = true;
-	cdev->is_need_stop_xmit = false;
 	del_timer(&cdev->timer);
 
 	netdev_dbg(ndev, "Finish transform packets %lu\n", stats->tx_packets);
@@ -591,6 +630,8 @@ static void phytium_can_tx_interrupt(struct net_device *ndev, u32 isr)
 	netif_wake_queue(ndev);
 }
 
+static void phytium_can_start(struct net_device *dev);
+
 static void phytium_can_tx_done_timeout(struct timer_list *t)
 {
 	struct phytium_can_dev *priv = from_timer(priv, t, timer);
@@ -598,19 +639,36 @@ static void phytium_can_tx_done_timeout(struct timer_list *t)
 	unsigned long flags;
 
 	spin_lock_irqsave(&priv->lock, flags);
-	if (!priv->is_tx_done && priv->tx_skb) {
+	if (!priv->is_tx_done) {
 		netdev_dbg(ndev, "tx done timeout\n");
 
 		priv->is_tx_done = true;
-		priv->is_need_stop_xmit = false;
-		priv->tx_skb = NULL;
 		ndev->stats.tx_errors++;
 
+		/* A frame-end interrupt does not carry a FIFO index.  Re-requesting
+		 * the timed-out FIFO entry can yield both its original completion and
+		 * its retry completion, which a boolean cannot distinguish from the
+		 * next frame.  Resetting the controller drops the old FIFO entry and
+		 * its pending completion before accepting another skb.
+		 */
 		phytium_can_clr_reg_bits(priv, CAN_CTRL, CTRL_XFER);
 		phytium_can_set_reg_bits(priv, CAN_INTR, INTR_TEIC | INTR_TFIC);
-		phytium_can_set_reg_bits(priv, CAN_CTRL, CTRL_XFER | CTRL_TXREQ);
 		can_free_echo_skb(ndev, 0, NULL);
-		netif_wake_queue(ndev);
+
+		/* Only a controller that is still on the bus may be restarted
+		 * here.  After bus-off the controller is held in configuration
+		 * mode and bringing it back is up to can_restart(), which only
+		 * runs if restart-ms was set; while the interface is being
+		 * stopped or suspended it has to stay off.  The echo slot is
+		 * released above in every case, so a timed-out frame can never
+		 * pin it down.
+		 */
+		if (priv->can.state == CAN_STATE_ERROR_ACTIVE ||
+		    priv->can.state == CAN_STATE_ERROR_WARNING ||
+		    priv->can.state == CAN_STATE_ERROR_PASSIVE) {
+			phytium_can_start(ndev);
+			netif_wake_queue(ndev);
+		}
 	}
 	spin_unlock_irqrestore(&priv->lock, flags);
 }
@@ -715,6 +773,20 @@ static irqreturn_t phytium_can_isr(int irq, void *dev_id)
 		return IRQ_NONE;
 
 	spin_lock(&cdev->lock);
+
+	/* Re-sample the status now that the lock is held.  The TX completion
+	 * handling below judges these bits against is_tx_done, which
+	 * phytium_can_tx_handler() clears while holding the same lock.  A
+	 * snapshot taken before the lock could be arbitrarily older than the
+	 * state it is compared with, and a completion latched for the previous
+	 * frame would then be attributed to the one just queued.
+	 */
+	isr = phytium_can_read(cdev, CAN_INTR) & INTR_STATUS_MASK;
+	if (!isr) {
+		spin_unlock(&cdev->lock);
+		return IRQ_HANDLED;
+	}
+
 	/* Check for FIFO full interrupt and alarm */
 	if ((isr & INTR_RFIS)) {
 		netdev_dbg(dev, "rx_fifo is full!.\n");
@@ -731,6 +803,24 @@ static irqreturn_t phytium_can_isr(int irq, void *dev_id)
 		phytium_can_set_reg_bits(cdev, CAN_INTR, INTR_TFIC);
 	}
 
+	/* Check for Tx interrupt and Processing it.
+	 *
+	 * The completion is handled before the error branch below.  A frame
+	 * that reached the end of the frame on the wire is a real completion
+	 * even when an error status is latched in the same snapshot; dropping
+	 * it would hand that frame to the TX timeout instead, which counts a TX
+	 * error for a frame that was sent, keeps echo slot 0 occupied and
+	 * resets the controller a hundred milliseconds later.
+	 *
+	 * Bus-off is the one case where the frame did not complete: the
+	 * controller is reset into configuration mode there and the echo slot
+	 * is released by the timeout or by can_restart().  Leave the latched
+	 * completion to the error branch, which drops it.
+	 */
+	if ((isr & INTR_TEIS) && !(isr & INTR_BOIS) &&
+	    cdev->can.state != CAN_STATE_BUS_OFF)
+		phytium_can_tx_interrupt(dev, isr);
+
 	/* Check for the type of error interrupt and Processing it */
 	if (isr & (INTR_EIS | INTR_RFIS | INTR_BOIS | INTR_PWIS | INTR_PEIS)) {
 		phytium_can_clr_reg_bits(cdev, CAN_INTR, (INTR_EIE | INTR_RFIE |
@@ -738,13 +828,17 @@ static irqreturn_t phytium_can_isr(int irq, void *dev_id)
 		phytium_can_err_interrupt(dev, isr);
 		phytium_can_set_reg_bits(cdev, CAN_INTR, (INTR_EIC | INTR_RFIC |
 					 INTR_BOIC | INTR_PWIC | INTR_PEIC));
+
+		/* A completion which was not handled above belongs to a frame
+		 * that never completed, or is stale from before the last
+		 * controller reset.  Drop it: leaving it latched would attribute
+		 * it to whichever frame is in flight when it is serviced.
+		 */
+		if (isr & INTR_TEIS)
+			phytium_can_set_reg_bits(cdev, CAN_INTR, INTR_TEIC);
+
 		spin_unlock(&cdev->lock);
 		return IRQ_HANDLED;
-	}
-
-	/* Check for Tx interrupt and Processing it */
-	if ((isr & INTR_TEIS)) {
-		phytium_can_tx_interrupt(dev, isr);
 	}
 
 	/* Check for the type of receive interrupt and Processing it */
@@ -877,7 +971,25 @@ static void phytium_can_start(struct net_device *dev)
 static void phytium_can_stop(struct net_device *dev)
 {
 	struct phytium_can_dev *cdev = netdev_priv(dev);
+	unsigned long flags;
 	u32 ctrl;
+
+	/* Publish the stopped state first.  The TX timeout restarts the
+	 * controller while it is still on the bus, so it has to observe this
+	 * state before it is waited for below, or a callback which is already
+	 * past its state check would undo the shutdown with a concurrent
+	 * phytium_can_start().
+	 */
+	spin_lock_irqsave(&cdev->lock, flags);
+	cdev->can.state = CAN_STATE_STOPPED;
+	spin_unlock_irqrestore(&cdev->lock, flags);
+
+	/* del_timer_sync() and not del_timer(): the close path flushes the echo
+	 * skbs in close_candev() without taking the driver lock, so a callback
+	 * still running in can_free_echo_skb() would free slot 0 twice.  The
+	 * lock must not be held across this call, the callback takes it.
+	 */
+	del_timer_sync(&cdev->timer);
 
 	/* Disable all interrupts */
 	phytium_can_disable_all_interrupt(cdev);
@@ -886,22 +998,25 @@ static void phytium_can_stop(struct net_device *dev)
 	ctrl = phytium_can_read(cdev, CAN_CTRL);
 	ctrl &= ~(CTRL_XFER | CTRL_TXREQ);
 	phytium_can_write(cdev, CAN_CTRL, ctrl);
-
-	del_timer(&cdev->timer);
-
-	/* Set the state as STOPPED */
-	cdev->can.state = CAN_STATE_STOPPED;
 }
 
 static void phytium_can_clean(struct net_device *dev)
 {
 	struct phytium_can_dev *cdev = netdev_priv(dev);
+	unsigned long flags;
 
-	if (cdev->tx_skb) {
+	/* The ISR and the TX timeout may both be about to consume echo slot 0.
+	 * Taking the lock here keeps the is_tx_done test, the skb release and
+	 * the flag update in one critical section, so the slot can only be
+	 * freed once.
+	 */
+	spin_lock_irqsave(&cdev->lock, flags);
+	if (!cdev->is_tx_done) {
 		dev->stats.tx_errors++;
 		can_free_echo_skb(cdev->net, 0, NULL);
-		cdev->tx_skb = NULL;
+		cdev->is_tx_done = true;
 	}
+	spin_unlock_irqrestore(&cdev->lock, flags);
 }
 
 static int phytium_can_set_mode(struct net_device *dev, enum can_mode mode)
@@ -958,7 +1073,6 @@ static int phytium_can_open(struct net_device *dev)
 	netdev_dbg(dev, "%s is going on\n", __func__);
 
 	napi_enable(&cdev->napi);
-	cdev->is_stop_queue_flag = STOP_QUEUE_FALSE;
 	netif_start_queue(dev);
 
 	return 0;
@@ -1002,12 +1116,23 @@ static netdev_tx_t phytium_can_start_xmit(struct sk_buff *skb, struct net_device
 {
 	struct phytium_can_dev *cdev = netdev_priv(dev);
 
-	if (can_dropped_invalid_skb(dev, skb))
+	if (can_dev_dropped_skb(dev, skb))
 		return NETDEV_TX_OK;
 
-	cdev->tx_skb = skb;
+	/* This controller implements classic CAN and CAN FD only.  A CAN XL
+	 * frame is accepted by can_dropped_invalid_skb() with up to CANXL_MTU
+	 * bytes and does not fit into the struct canfd_frame which
+	 * phytium_can_tx_handler() copies it into.  Dropping it here also
+	 * prevents canxl_frame::flags (CANXL_XLF, 0x80) from being read as
+	 * canfd_frame::len by phytium_can_write_frame().
+	 */
+	if (unlikely(can_is_canxl_skb(skb))) {
+		kfree_skb(skb);
+		dev->stats.tx_dropped++;
+		return NETDEV_TX_OK;
+	}
 
-	return phytium_can_tx_handler(cdev);
+	return phytium_can_tx_handler(cdev, skb);
 }
 
 static const struct net_device_ops phytium_can_netdev_ops = {
@@ -1093,7 +1218,6 @@ int phytium_can_register(struct phytium_can_dev *cdev)
 	}
 
 	cdev->is_tx_done = true;
-	cdev->is_need_stop_xmit = false;
 	timer_setup(&cdev->timer, phytium_can_tx_done_timeout, 0);
 
 	dev_info(cdev->dev, "%s device registered (irq=%d)\n",
@@ -1127,6 +1251,18 @@ int phytium_can_suspend(struct device *dev)
 		netif_stop_queue(ndev);
 		netif_device_detach(ndev);
 		phytium_can_stop(ndev);
+
+		/* A frame may have been in flight when the interface was
+		 * detached.  phytium_can_stop() only disables interrupts and the
+		 * TX timeout, so without this the echo slot would stay occupied
+		 * and every later can_put_echo_skb() would fail with -EBUSY,
+		 * leaving the device unable to transmit for good.  The close path
+		 * does not need it because close_candev() flushes the echo skbs.
+		 * Done after the stop so the IRQ handler and the timer are
+		 * already out of the way.
+		 */
+		phytium_can_clean(ndev);
+
 		pm_runtime_put_sync(cdev->dev);
 	}
 
@@ -1142,16 +1278,22 @@ int phytium_can_resume(struct device *dev)
 	struct phytium_can_dev *cdev = netdev_priv(ndev);
 	int ret;
 
-	cdev->can.state = CAN_STATE_ERROR_ACTIVE;
-
 	if (netif_running(ndev)) {
 		ret = pm_runtime_resume(cdev->dev);
 		if (ret)
 			return ret;
 
+		/* phytium_can_start() puts the controller back into
+		 * CAN_STATE_ERROR_ACTIVE.
+		 */
 		phytium_can_start(ndev);
 		netif_device_attach(ndev);
 		netif_start_queue(ndev);
+	} else {
+		/* Nothing was started, so the controller is still in the
+		 * configuration mode phytium_can_stop() left it in.
+		 */
+		cdev->can.state = CAN_STATE_STOPPED;
 	}
 
 	return 0;
@@ -1162,4 +1304,3 @@ MODULE_AUTHOR("Cheng Quan <chengquan@phytium.com.cn>");
 MODULE_AUTHOR("Chen Baozi <chenbaozi@phytium.com.cn>");
 MODULE_LICENSE("GPL v2");
 MODULE_DESCRIPTION("CAN bus driver for Phytium CAN controller");
-
