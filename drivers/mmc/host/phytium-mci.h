@@ -19,7 +19,7 @@
 /*------------------------------------------------------*/
 /* Common Definition					*/
 /*------------------------------------------------------*/
-#define PHYTIUM_MMC_DRIVER_VERSION "1.0.4"
+#define PHYTIUM_MMC_DRIVER_VERSION "1.0.5"
 
 #define MAX_BD_NUM		128
 #define SD_BLOCK_SIZE		512
@@ -249,6 +249,10 @@
 #define MCI_DMAC_STATUS_DU		(0x1 << 4) /* RW */
 #define MCI_DMAC_STATUS_NIS		(0x1 << 8) /* RW */
 #define MCI_DMAC_STATUS_AIS		(0x1 << 9) /* RW */
+#define MCI_DMAC_STATUS_DMA_STATE_MASK	GENMASK(18, 17) /* RO */
+#define MCI_DMAC_STATUS_BUS_STATE_MASK	GENMASK(21, 19) /* RO */
+#define MCI_DMAC_STATUS_BUSY_MASK	(MCI_DMAC_STATUS_DMA_STATE_MASK | \
+					 MCI_DMAC_STATUS_BUS_STATE_MASK)
 
 /* MCI_DMAC_INT_ENA mask */
 #define MCI_DMAC_INT_ENA_TI		(0x1 << 0) /* RW */
@@ -315,6 +319,7 @@ enum adtc_t {
 };
 
 struct phytium_mci_dma_quirk;
+struct phytium_mci_recovery_quirk;
 
 struct phytium_mci_host {
 	struct device *dev;
@@ -354,6 +359,7 @@ struct phytium_mci_host {
 	unsigned long flags;
 
 	struct phytium_mci_dma_quirk *dma_quirk;
+	struct phytium_mci_recovery_quirk *recovery_quirk;
 #define MCI_CARD_NEED_INIT	1
 	bool use_hold;	/*use hold reg*/
 	bool clk_set;	/*clock set function enable*/
@@ -370,6 +376,13 @@ void phytium_mci_dma_quirk_start(struct phytium_mci_host *host,
 				 struct mmc_request *mrq);
 void phytium_mci_dma_quirk_complete(struct phytium_mci_host *host,
 				    struct mmc_request *mrq);
+int phytium_mci_recovery_quirk_init(struct phytium_mci_host *host);
+u32 phytium_mci_recovery_fifo_reset_mask(struct phytium_mci_host *host);
+void phytium_mci_recovery_check_write(struct phytium_mci_host *host,
+				      struct mmc_command *cmd);
+void phytium_mci_recovery_handle_data_error(struct phytium_mci_host *host,
+					    u32 events, bool card_removed);
+bool phytium_mci_recovery_card_removed(struct phytium_mci_host *host);
 int phytium_mci_runtime_suspend(struct device *dev);
 int phytium_mci_runtime_resume(struct device *dev);
 int phytium_mci_resume(struct device *dev);

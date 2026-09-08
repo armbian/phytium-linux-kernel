@@ -87,9 +87,12 @@ static void sdr_clr_bits(void __iomem *reg, u32 bs)
 
 static void phytium_mci_reset_hw(struct phytium_mci_host *host)
 {
-	sdr_set_bits(host->base + MCI_CNTRL, MCI_CNTRL_FIFO_RESET | MCI_CNTRL_DMA_RESET);
+	u32 reset_mask;
 
-	while (readl(host->base + MCI_CNTRL) & (MCI_CNTRL_FIFO_RESET | MCI_CNTRL_DMA_RESET))
+	reset_mask = phytium_mci_recovery_fifo_reset_mask(host);
+	sdr_set_bits(host->base + MCI_CNTRL, reset_mask | MCI_CNTRL_DMA_RESET);
+
+	while (readl(host->base + MCI_CNTRL) & (reset_mask | MCI_CNTRL_DMA_RESET))
 		cpu_relax();
 	phytium_mci_send_cmd(host, MCI_CMD_UPD_CLK, 0);
 }
@@ -591,6 +594,7 @@ phytium_mci_start_write_multiple_non_dma(struct mmc_host *mmc, struct mmc_reques
 	struct mmc_data *data = mrq->data;
 	u32 write_cnts, last_cnts;
 	u32 i, j, k, send_cnt_one_sg, block_offset;
+	u32 reset_mask;
 	int ret = 0, dma_len;
 	struct scatterlist *sg;
 	u32 *virt_addr = NULL;
@@ -607,9 +611,12 @@ phytium_mci_start_write_multiple_non_dma(struct mmc_host *mmc, struct mmc_reques
 		__func__, mrq->cmd->opcode, data->blocks);
 
 	sdr_clr_bits(host->base + MCI_CNTRL, MCI_CNTRL_USE_INTERNAL_DMAC);
-	sdr_set_bits(host->base + MCI_CNTRL, MCI_CNTRL_FIFO_RESET);
-	while (readl(host->base + MCI_CNTRL) & MCI_CNTRL_FIFO_RESET)
-		cpu_relax();
+	reset_mask = phytium_mci_recovery_fifo_reset_mask(host);
+	if (reset_mask) {
+		sdr_set_bits(host->base + MCI_CNTRL, reset_mask);
+		while (readl(host->base + MCI_CNTRL) & reset_mask)
+			cpu_relax();
+	}
 	sdr_clr_bits(host->base + MCI_BUS_MODE, MCI_BUS_MODE_DE);
 
 	if (mmc_get_dma_dir(data) == DMA_TO_DEVICE) {
@@ -674,9 +681,14 @@ write_err:
 	if (ret) {
 		data->bytes_xfered = 0;
 		if (ret == -ESHUTDOWN) {
-			sdr_set_bits(host->base + MCI_CNTRL, MCI_CNTRL_FIFO_RESET);
-			while (readl(host->base + MCI_CNTRL) & MCI_CNTRL_FIFO_RESET)
-				cpu_relax();
+			reset_mask = phytium_mci_recovery_fifo_reset_mask(host);
+			if (reset_mask) {
+				sdr_set_bits(host->base + MCI_CNTRL,
+					     reset_mask);
+				while (readl(host->base + MCI_CNTRL) &
+				       reset_mask)
+					cpu_relax();
+			}
 
 			sdr_set_bits(host->base + MCI_CNTRL, MCI_CNTRL_CONTROLLER_RESET);
 			while (readl(host->base + MCI_STATUS) & MCI_STATUS_CARD_BUSY)
@@ -699,6 +711,7 @@ phytium_mci_start_data(struct phytium_mci_host *host, struct mmc_request *mrq,
 {
 	bool read;
 	u32 rawcmd;
+	u32 reset_mask;
 	unsigned long flags;
 
 
@@ -716,9 +729,10 @@ phytium_mci_start_data(struct phytium_mci_host *host, struct mmc_request *mrq,
 	/* clear interrupts */
 	writel(0xffffe, host->base + MCI_RAW_INTS);
 
-	sdr_set_bits(host->base + MCI_CNTRL, MCI_CNTRL_FIFO_RESET | MCI_CNTRL_DMA_RESET);
+	reset_mask = phytium_mci_recovery_fifo_reset_mask(host);
+	sdr_set_bits(host->base + MCI_CNTRL, reset_mask | MCI_CNTRL_DMA_RESET);
 
-	while (readl(host->base + MCI_CNTRL) & (MCI_CNTRL_FIFO_RESET | MCI_CNTRL_DMA_RESET))
+	while (readl(host->base + MCI_CNTRL) & (reset_mask | MCI_CNTRL_DMA_RESET))
 		cpu_relax();
 
 	if (host->adtc_type == COMMOM_ADTC)
@@ -733,6 +747,8 @@ phytium_mci_start_data(struct phytium_mci_host *host, struct mmc_request *mrq,
 		phytium_mci_data_sg_write_2_admc_table(host, data);
 	else
 		phytium_mci_data_sg_write_2_fifo(host, data);
+
+	phytium_mci_recovery_check_write(host, cmd);
 
 	spin_lock_irqsave(&host->lock, flags);
 	sdr_set_bits(host->base + MCI_INT_MASK, cmd_ints_mask | data_ints_mask);
@@ -1102,6 +1118,8 @@ static bool phytium_mci_data_xfer_done(struct phytium_mci_host *host, u32 events
 				data->error = -ETIMEDOUT;
 			}
 			host->cmd = NULL;
+			phytium_mci_recovery_handle_data_error(host, events,
+							       card_removed);
 		}
 
 		phytium_mci_data_xfer_next(host, mrq, data);
@@ -1148,8 +1166,8 @@ static void phytium_mci_request_timeout(struct work_struct *work)
 
 	if (host->current_ios_clk != 0) {
 		dev_err(host->dev, "reset mci fifo DMA controlled\n");
-		reset_mask = MCI_CNTRL_FIFO_RESET | MCI_CNTRL_DMA_RESET |
-			     MCI_CNTRL_CONTROLLER_RESET;
+		reset_mask = phytium_mci_recovery_fifo_reset_mask(host);
+		reset_mask |= MCI_CNTRL_DMA_RESET | MCI_CNTRL_CONTROLLER_RESET;
 		sdr_set_bits(host->base + MCI_CNTRL, reset_mask);
 		rc = readl_relaxed_poll_timeout_atomic(host->base + MCI_CNTRL,
 						       reg_val,
@@ -1204,6 +1222,8 @@ static void hotplug_timer_func(struct timer_list *t)
 			mmc_detect_change(host->mmc, msecs_to_jiffies(100));
 		}
 	} else {
+		if (phytium_mci_recovery_card_removed(host))
+			phytium_mci_init_hw(host);
 		cancel_delayed_work(&host->mmc->detect);
 		mmc_detect_change(host->mmc, msecs_to_jiffies(200));
 	}
@@ -1475,9 +1495,9 @@ static void phytium_mci_ops_set_ios(struct mmc_host *mmc, struct mmc_ios *ios)
 		sdr_set_bits(host->base + MCI_UHS_REG, MCI_UHS_REG_DDR);
 		sdr_set_bits(host->base + MCI_CNTRL, MCI_CNTRL_START_BIT_MODE);
 		sdr_clr_bits(host->base + MCI_EMMC_DDR_REG, MCI_EMMC_DDR_CYCLE);
-	}
-	else
+	} else {
 		sdr_clr_bits(host->base + MCI_UHS_REG, MCI_UHS_REG_DDR);
+	}
 
 	phytium_mci_set_buswidth(host, ios->bus_width);
 
@@ -1564,12 +1584,14 @@ static void phytium_mci_hw_reset(struct mmc_host *mmc)
 	u32 reset_flag;
 
 	if (host->is_use_dma) {
-		reset_flag = MCI_CNTRL_FIFO_RESET | MCI_CNTRL_DMA_RESET;
+		reset_flag = phytium_mci_recovery_fifo_reset_mask(host);
+		reset_flag |= MCI_CNTRL_DMA_RESET;
 		phytium_mci_adma_reset(host);
 		sdr_set_bits(host->base + MCI_CNTRL, reset_flag);
 	} else {
-		reset_flag = MCI_CNTRL_FIFO_RESET;
-		sdr_set_bits(host->base + MCI_CNTRL, reset_flag);
+		reset_flag = phytium_mci_recovery_fifo_reset_mask(host);
+		if (reset_flag)
+			sdr_set_bits(host->base + MCI_CNTRL, reset_flag);
 	}
 
 	while (readl(host->base + MCI_CNTRL) & reset_flag)
@@ -1653,6 +1675,10 @@ int phytium_mci_common_probe(struct phytium_mci_host *host)
 	timer_setup(&host->hotplug_timer, hotplug_timer_func, 0);
 	INIT_DELAYED_WORK(&host->req_timeout, phytium_mci_request_timeout);
 	ret = phytium_mci_dma_quirk_init(host);
+	if (ret)
+		return ret;
+
+	ret = phytium_mci_recovery_quirk_init(host);
 	if (ret)
 		return ret;
 
