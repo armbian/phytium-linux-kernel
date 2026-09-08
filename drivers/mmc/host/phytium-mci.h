@@ -19,7 +19,7 @@
 /*------------------------------------------------------*/
 /* Common Definition					*/
 /*------------------------------------------------------*/
-#define PHYTIUM_MMC_DRIVER_VERSION "1.0.0"
+#define PHYTIUM_MMC_DRIVER_VERSION "1.0.1"
 
 #define MAX_BD_NUM		128
 #define SD_BLOCK_SIZE		512
@@ -349,6 +349,10 @@ struct phytium_mci_host {
 	unsigned long clk_rate;
 	unsigned long clk_div;
 	unsigned long irq_flags;
+	u32 pending_events;
+	u32 pending_event_mask;
+	u32 pending_dmac_events;
+	u32 pending_dmac_mask;
 	unsigned long flags;
 #define MCI_CARD_NEED_INIT	1
 	bool use_hold;	/*use hold reg*/

@@ -1199,9 +1199,6 @@ static irqreturn_t phytium_mci_irq(int irq, void *dev_id)
 {
 	struct phytium_mci_host *host = (struct phytium_mci_host *) dev_id;
 	unsigned long flags;
-	struct mmc_request *mrq;
-	struct mmc_command *cmd;
-	struct mmc_data *data;
 	u32 events, event_mask, dmac_events, dmac_evt_mask;
 
 	if (!host)
@@ -1221,15 +1218,45 @@ static irqreturn_t phytium_mci_irq(int irq, void *dev_id)
 		__func__, events, event_mask, dmac_events, dmac_evt_mask,
 		host->mrq ? host->mrq->cmd->opcode : 255);
 
-	mrq = host->mrq;
-	cmd = host->cmd;
-	data = host->data;
+	host->pending_events |= events;
+	host->pending_event_mask |= event_mask;
+	host->pending_dmac_events |= dmac_events;
+	host->pending_dmac_mask |= dmac_evt_mask;
 
 	if ((events & event_mask) & MCI_RAW_INTS_SDIO)
 		__phytium_mci_enable_sdio_irq(host, 0);
 
 	writel((events & event_mask), host->base + MCI_RAW_INTS);
 	writel(dmac_events, host->base + MCI_DMAC_STATUS);
+	spin_unlock_irqrestore(&host->lock, flags);
+
+	return IRQ_WAKE_THREAD;
+}
+
+static irqreturn_t phytium_mci_irq_thread(int irq, void *dev_id)
+{
+	struct phytium_mci_host *host = dev_id;
+	unsigned long flags;
+	struct mmc_request *mrq;
+	struct mmc_command *cmd;
+	struct mmc_data *data;
+	u32 events, event_mask, dmac_events, dmac_evt_mask;
+
+	if (!host)
+		return IRQ_NONE;
+
+	spin_lock_irqsave(&host->lock, flags);
+	events = host->pending_events;
+	event_mask = host->pending_event_mask;
+	dmac_events = host->pending_dmac_events;
+	dmac_evt_mask = host->pending_dmac_mask;
+	host->pending_events = 0;
+	host->pending_event_mask = 0;
+	host->pending_dmac_events = 0;
+	host->pending_dmac_mask = 0;
+	mrq = host->mrq;
+	cmd = host->cmd;
+	data = host->data;
 	spin_unlock_irqrestore(&host->lock, flags);
 
 	if ((events & event_mask) & MCI_RAW_INTS_SDIO)
@@ -1627,8 +1654,11 @@ int phytium_mci_common_probe(struct phytium_mci_host *host)
 	spin_lock_init(&host->lock);
 
 	phytium_mci_init_hw(host);
-	ret = devm_request_irq(host->dev, host->irq, phytium_mci_irq,
-			       host->irq_flags, "phytium-mci", host);
+	ret = devm_request_threaded_irq(host->dev, host->irq,
+					phytium_mci_irq,
+					phytium_mci_irq_thread,
+					host->irq_flags | IRQF_ONESHOT,
+					"phytium-mci", host);
 
 	if (ret)
 		return ret;
