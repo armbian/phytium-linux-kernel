@@ -19,7 +19,7 @@
 /*------------------------------------------------------*/
 /* Common Definition					*/
 /*------------------------------------------------------*/
-#define PHYTIUM_MMC_DRIVER_VERSION "1.0.3"
+#define PHYTIUM_MMC_DRIVER_VERSION "1.0.4"
 
 #define MAX_BD_NUM		128
 #define SD_BLOCK_SIZE		512
@@ -314,6 +314,8 @@ enum adtc_t {
 	BLOCK_RW_ADTC	= 1
 };
 
+struct phytium_mci_dma_quirk;
+
 struct phytium_mci_host {
 	struct device *dev;
 	struct mmc_host *mmc;
@@ -350,6 +352,8 @@ struct phytium_mci_host {
 	u32 pending_dmac_events;
 	u32 pending_dmac_mask;
 	unsigned long flags;
+
+	struct phytium_mci_dma_quirk *dma_quirk;
 #define MCI_CARD_NEED_INIT	1
 	bool use_hold;	/*use hold reg*/
 	bool clk_set;	/*clock set function enable*/
@@ -361,6 +365,11 @@ struct phytium_mci_host {
 
 int phytium_mci_common_probe(struct phytium_mci_host *host);
 void phytium_mci_deinit_hw(struct phytium_mci_host *host);
+int phytium_mci_dma_quirk_init(struct phytium_mci_host *host);
+void phytium_mci_dma_quirk_start(struct phytium_mci_host *host,
+				 struct mmc_request *mrq);
+void phytium_mci_dma_quirk_complete(struct phytium_mci_host *host,
+				    struct mmc_request *mrq);
 int phytium_mci_runtime_suspend(struct device *dev);
 int phytium_mci_runtime_resume(struct device *dev);
 int phytium_mci_resume(struct device *dev);

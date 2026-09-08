@@ -112,6 +112,7 @@ static void phytium_mci_prepare_data(struct phytium_mci_host *host,
 		data->host_cookie |= MCI_PREPARE_FLAG;
 		data->sg_count = dma_map_sg(host->dev, data->sg, data->sg_len,
 					    mmc_get_dma_dir(data));
+		phytium_mci_dma_quirk_start(host, mrq);
 	}
 }
 
@@ -124,6 +125,7 @@ static void phytium_mci_unprepare_data(struct phytium_mci_host *host,
 		return;
 
 	if (data->host_cookie & MCI_PREPARE_FLAG) {
+		phytium_mci_dma_quirk_complete(host, mrq);
 		dma_unmap_sg(host->dev, data->sg, data->sg_len, mmc_get_dma_dir(data));
 		data->host_cookie &= ~MCI_PREPARE_FLAG;
 	}
@@ -1650,6 +1652,9 @@ int phytium_mci_common_probe(struct phytium_mci_host *host)
 
 	timer_setup(&host->hotplug_timer, hotplug_timer_func, 0);
 	INIT_DELAYED_WORK(&host->req_timeout, phytium_mci_request_timeout);
+	ret = phytium_mci_dma_quirk_init(host);
+	if (ret)
+		return ret;
 
 	mmc->f_min = MCI_F_MIN;
 	if (!mmc->f_max)
