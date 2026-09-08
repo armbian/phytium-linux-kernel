@@ -41,10 +41,12 @@ static const u32 cmd_ints_mask = MCI_INT_MASK_RE | MCI_INT_MASK_CMD | MCI_INT_MA
 				 MCI_INT_MASK_RTO | MCI_INT_MASK_HTO | MCI_RAW_INTS_HLE;
 
 static const u32 data_ints_mask = MCI_INT_MASK_DTO | MCI_INT_MASK_DCRC | MCI_INT_MASK_DRTO |
-				  MCI_INT_MASK_SBE_BCI;
+				  MCI_INT_MASK_SBE_BCI | MCI_INT_MASK_EBE |
+				  MCI_INT_MASK_FRUN;
 static const u32 cmd_err_ints_mask = MCI_INT_MASK_RTO | MCI_INT_MASK_RCRC | MCI_INT_MASK_RE |
 				     MCI_INT_MASK_DCRC | MCI_INT_MASK_DRTO |
-				     MCI_MASKED_INTS_SBE_BCI | MCI_MASKED_INTS_EBE;
+				     MCI_MASKED_INTS_SBE_BCI | MCI_MASKED_INTS_EBE |
+				     MCI_INT_MASK_FRUN;
 
 static const u32 dmac_ints_mask = MCI_DMAC_INT_ENA_FBE | MCI_DMAC_INT_ENA_DU |
 				  MCI_DMAC_INT_ENA_NIS | MCI_DMAC_INT_ENA_AIS;
@@ -1046,13 +1048,15 @@ static bool phytium_mci_data_xfer_done(struct phytium_mci_host *host, u32 events
 					struct mmc_request *mrq, struct mmc_data *data)
 {
 	unsigned long flags;
+	bool card_removed;
 	bool done;
 
 	unsigned int check_data = events & (MCI_RAW_INTS_DTO | MCI_RAW_INTS_RCRC |
 					    MCI_RAW_INTS_DCRC | MCI_RAW_INTS_RE |
 					    MCI_RAW_INTS_DRTO | MCI_RAW_INTS_EBE |
 					    MCI_DMAC_STATUS_AIS | MCI_DMAC_STATUS_DU |
-					    MCI_RAW_INTS_SBE_BCI | MCI_INT_MASK_RTO);
+					    MCI_RAW_INTS_SBE_BCI | MCI_INT_MASK_RTO |
+					    MCI_RAW_INTS_FRUN);
 
 	spin_lock_irqsave(&host->lock, flags);
 	done = !host->data;
@@ -1081,19 +1085,20 @@ static bool phytium_mci_data_xfer_done(struct phytium_mci_host *host, u32 events
 				data->bytes_xfered = data->blocks * data->blksz;
 		} else {
 			data->bytes_xfered = 0;
-			if (!(host->mmc->caps & MMC_CAP_NONREMOVABLE)
-			    && readl(host->base + MCI_CARD_DETECT)
-			    && (events & cmd_err_ints_mask)) {
+			card_removed = !(host->mmc->caps & MMC_CAP_NONREMOVABLE) &&
+				       readl(host->base + MCI_CARD_DETECT);
+			if (card_removed) {
 				data->error = -ENOMEDIUM;
 				data->mrq->cmd->error =  -ENOMEDIUM;
 			} else if (events & (MCI_RAW_INTS_DCRC | MCI_RAW_INTS_EBE |
 					   MCI_RAW_INTS_SBE_BCI)) {
 				data->error = -EILSEQ;
-				host->cmd = NULL;
+			} else if (events & MCI_RAW_INTS_FRUN) {
+				data->error = -EIO;
 			} else {
 				data->error = -ETIMEDOUT;
-				host->cmd = NULL;
 			}
+			host->cmd = NULL;
 		}
 
 		phytium_mci_data_xfer_next(host, mrq, data);
