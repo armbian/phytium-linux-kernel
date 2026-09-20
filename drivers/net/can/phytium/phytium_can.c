@@ -86,8 +86,13 @@ enum phytium_can_reg {
 #define INTR_STATUS_MASK (INTR_BOIS | INTR_PWIS | INTR_PEIS | INTR_RFIS | \
 			  INTR_TFIS | INTR_REIS | INTR_TEIS | INTR_EIS)
 
+/* EIE (per-error) is deliberately NOT enabled: it is level-ish under sustained
+ * faults and raises a ~kHz interrupt storm, while every state change is
+ * covered by the threshold interrupts (PWIS/PEIS) and the bus-off interrupt
+ * (BOIS).
+ */
 #define INTR_EN_MASK    (INTR_BOIE | INTR_PWIE | INTR_PEIE | INTR_RFIE | \
-			 INTR_REIE | INTR_TEIE | INTR_EIE)
+			 INTR_REIE | INTR_TEIE)
 
 #define INTR_CLEAR_MASK	 (INTR_BOIC | INTR_PWIC | INTR_PEIC | INTR_RFIC | \
 			  INTR_TFIC | INTR_REIC | INTR_TEIC | INTR_EIC)
@@ -415,6 +420,137 @@ static int phytium_can_do_rx_poll(struct net_device *dev, int quota)
 	return pkts;
 }
 
+/**
+ * phytium_can_sync_error_irqs - gate the warning/passive interrupts on their
+ * own counter thresholds
+ * @cdev:	Pointer to the CAN device structure
+ * @txerr:	Current transmit error counter
+ * @rxerr:	Current receive error counter
+ *
+ * PWIS and PEIS are level-triggered off the error counters (asserted while a
+ * counter is >= 96 and >= 128 respectively), so leaving their enable bit set
+ * while the level is high raises an interrupt storm.  Instead gate each enable
+ * by its own threshold: keep PWIE set only while the counters are still below
+ * 96 and PEIE only while below 128.  An interrupt then fires exactly once when
+ * a counter rises through the threshold, and stays quiet afterwards; as soon
+ * as the counters drop again (a successfully received/sent frame) this helper
+ * re-arms the enable so the next rising edge is caught too.  This keeps state
+ * transitions fully interrupt-driven even for a node that only accumulates RX
+ * errors (where no frame ever completes) and needs no periodic counter poll.
+ *
+ * BOIE is not touched here: it is armed in phytium_can_start() and masked only
+ * once bus-off has been entered (see phytium_can_err_interrupt()), so a bus-off
+ * is reported once and not again before the controller is restarted; the next
+ * restart re-arms it.  The same holds for PWIE/PEIE, which are masked together
+ * with BOIE when bus-off is entered: past BUS_OFF this helper never runs again,
+ * so the threshold enables have to be dropped where bus-off is entered.
+ * EIS storms under sustained faults and is never enabled (see INTR_EN_MASK).
+ */
+static void phytium_can_sync_error_irqs(struct phytium_can_dev *cdev,
+					u32 txerr, u32 rxerr)
+{
+	u32 maxerr = max(txerr, rxerr);
+	u32 en = 0;
+
+	if (maxerr < 96)
+		en |= INTR_PWIE;
+	if (maxerr < 128)
+		en |= INTR_PEIE;
+
+	phytium_can_write(cdev, CAN_INTR,
+			  (phytium_can_read(cdev, CAN_INTR) &
+			   ~(INTR_PWIE | INTR_PEIE)) | en);
+}
+
+/**
+ * phytium_can_update_state - derive and apply the CAN error state
+ * @ndev:	Pointer to net_device structure
+ * @cf:		Pre-allocated CAN error frame, or NULL to allocate one here
+ *
+ * The error counters are the ground truth: re-derive the tx/rx can_state from
+ * them and let the CAN core apply the transition.  This is called on every
+ * warning/passive interrupt (which this driver now makes fire exactly on the
+ * threshold crossings via phytium_can_sync_error_irqs()) and on every TX/RX
+ * completion and TX timeout, so both the rising transitions and the recovery
+ * (falling) ones are reported.  Entering bus-off is left to the BOIS interrupt
+ * as it also needs the controller reset/restart handling in
+ * phytium_can_err_interrupt().
+ *
+ * The counters only describe the bus while the controller is on it, so the
+ * transition is skipped once the interface is stopped or suspended:
+ * phytium_can_stop() publishes CAN_STATE_STOPPED before the interrupts are
+ * disabled, and an ISR or the TX timeout callback running in that window must
+ * not overwrite it.
+ *
+ * A caller which has no error frame of its own -- the RX poll, the TX
+ * completion and the TX timeout -- passes NULL: a transition found there must
+ * still reach the stack, so the frame is allocated on the spot.  The
+ * allocation is deliberately made only once the counters are known to have
+ * crossed a threshold, so the common refresh that changes nothing costs no
+ * skb.
+ *
+ * Return: true when the state was changed.
+ */
+static bool phytium_can_update_state(struct net_device *ndev,
+				     struct can_frame *cf)
+{
+	struct phytium_can_dev *cdev = netdev_priv(ndev);
+	struct net_device_stats *stats = &ndev->stats;
+	enum can_state tx_state, rx_state;
+	struct sk_buff *skb = NULL;
+	u32 txerr, rxerr, errcnt;
+
+	/* BUS_OFF and everything above it (STOPPED, SLEEPING) is not derived
+	 * from the counters.  Bus-off is handled by the BOIS interrupt, and a
+	 * state published by phytium_can_stop() or the suspend path must stay:
+	 * overwriting it would also defeat the "only a controller still on the
+	 * bus may be restarted" check in phytium_can_tx_done_timeout().
+	 */
+	if (cdev->can.state >= CAN_STATE_BUS_OFF)
+		return false;
+
+	errcnt = phytium_can_read(cdev, CAN_ERROR_CNT);
+	rxerr = errcnt & ERR_CNT_REC;
+	txerr = (errcnt & ERR_CNT_TEC) >> 16;
+
+	tx_state = txerr >= 128 ? CAN_STATE_ERROR_PASSIVE :
+		   txerr >= 96  ? CAN_STATE_ERROR_WARNING :
+				  CAN_STATE_ERROR_ACTIVE;
+	rx_state = rxerr >= 128 ? CAN_STATE_ERROR_PASSIVE :
+		   rxerr >= 96  ? CAN_STATE_ERROR_WARNING :
+				  CAN_STATE_ERROR_ACTIVE;
+
+	/* Re-gate the threshold interrupt enables against the current counters
+	 * on every refresh, so a threshold crossing is caught even when it is
+	 * not accompanied by a frame-end or timeout event.
+	 */
+	phytium_can_sync_error_irqs(cdev, txerr, rxerr);
+
+	if (max(tx_state, rx_state) == cdev->can.state)
+		return false;
+
+	/* No frame of our own: allocate one so the transition is not applied
+	 * silently.  can_change_state() copes with cf still being NULL after a
+	 * failed allocation, the state is then updated without a notification.
+	 */
+	if (!cf)
+		skb = alloc_can_err_skb(ndev, &cf);
+
+	can_change_state(ndev, cf, tx_state, rx_state);
+	if (cf) {
+		cf->data[6] = txerr;
+		cf->data[7] = rxerr;
+	}
+
+	if (skb) {
+		stats->rx_packets++;
+		stats->rx_bytes += cf->can_dlc;
+		netif_rx(skb);
+	}
+
+	return true;
+}
+
 static int phytium_can_poll(struct napi_struct *napi, int quota)
 {
 	struct net_device *dev = napi->dev;
@@ -425,6 +561,16 @@ static int phytium_can_poll(struct napi_struct *napi, int quota)
 	netdev_dbg(dev, "The receive processing is going on !\n");
 
 	work_done = phytium_can_do_rx_poll(dev, quota);
+
+	/* Mirror the TX completion refresh: RX activity also changes the error
+	 * counters (RX errors raise them, received frames lower them), and the
+	 * error-status interrupts may be masked while errors recur.  Refresh
+	 * the state from the counters on the RX path as well so RX-driven
+	 * transitions cannot be lost either.
+	 */
+	spin_lock_irqsave(&cdev->lock, flags);
+	phytium_can_update_state(dev, NULL);
+	spin_unlock_irqrestore(&cdev->lock, flags);
 
 	/* Don't re-enable interrupts if the driver had a fatal error
 	 * (e.g., FIFO read failure)
@@ -624,8 +770,11 @@ static void phytium_can_tx_interrupt(struct net_device *ndev, u32 isr)
 
 	netdev_dbg(ndev, "Finish transform packets %lu\n", stats->tx_packets);
 
-	phytium_can_set_reg_bits(cdev, CAN_INTR,
-				 INTR_BOIE | INTR_PWIE | INTR_PEIE);
+	/* A completed frame lowered the error counters; refresh the state and
+	 * re-arm the warning/passive interrupt enables according to the new
+	 * counter levels (see phytium_can_sync_error_irqs()).
+	 */
+	phytium_can_update_state(ndev, NULL);
 
 	netif_wake_queue(ndev);
 }
@@ -655,6 +804,15 @@ static void phytium_can_tx_done_timeout(struct timer_list *t)
 		phytium_can_set_reg_bits(priv, CAN_INTR, INTR_TEIC | INTR_TFIC);
 		can_free_echo_skb(ndev, 0, NULL);
 
+		/* A frame that times out usually never completed because the bus
+		 * faults (no ACK, etc.); its error counters may already have pushed
+		 * the node past the error-passive threshold without a TX frame-end
+		 * interrupt.  Refresh the state before phytium_can_start() resets
+		 * the controller and clears the counters, so that condition is
+		 * reported instead of being silently dropped.
+		 */
+		phytium_can_update_state(ndev, NULL);
+
 		/* Only a controller that is still on the bus may be restarted
 		 * here.  After bus-off the controller is held in configuration
 		 * mode and bringing it back is up to can_restart(), which only
@@ -677,59 +835,43 @@ static void phytium_can_err_interrupt(struct net_device *ndev, u32 isr)
 {
 	struct phytium_can_dev *cdev = netdev_priv(ndev);
 	struct net_device_stats *stats = &ndev->stats;
-	struct can_frame *cf;
+	struct can_frame *cf = NULL;
 	struct sk_buff *skb;
-	u32  txerr = 0, rxerr = 0;
+	bool reported = false;
 
 	skb = alloc_can_err_skb(ndev, &cf);
 
-	rxerr = phytium_can_read(cdev, CAN_ERROR_CNT) & ERR_CNT_REC;
-	txerr = ((phytium_can_read(cdev, CAN_ERROR_CNT) & ERR_CNT_TEC) >> 16);
-
 	if (isr & INTR_BOIS) {
-		netdev_dbg(ndev, "bus_off %s: txerr :%u rxerr :%u\n",
-			   __func__, txerr, rxerr);
-		cdev->can.state = CAN_STATE_BUS_OFF;
-		cdev->can.can_stats.bus_off++;
-		/* Leave device in Config Mode in bus-off state */
-		phytium_can_write(cdev, CAN_CTRL, CTRL_RST);
-		can_bus_off(ndev);
-		if (skb)
-			cf->can_id |= CAN_ERR_BUSOFF;
-	} else if ((isr & INTR_PEIS) == INTR_PEIS) {
-		netdev_dbg(ndev, "error_passive %s: txerr :%u rxerr :%u\n",
-			   __func__, txerr, rxerr);
-		cdev->can.state = CAN_STATE_ERROR_PASSIVE;
-		cdev->can.can_stats.error_passive++;
-		/* Clear interrupt condition */
-		phytium_can_set_reg_bits(cdev, CAN_INTR, INTR_PEIC);
-		phytium_can_set_reg_bits(cdev, CAN_INTR, INTR_PWIC);
-		phytium_can_set_reg_bits(cdev, CAN_INTR, INTR_TEIC);
-		phytium_can_set_reg_bits(cdev, CAN_INTR, INTR_EIC);
-		if (skb) {
-			cf->can_id |= CAN_ERR_CRTL;
-			cf->data[1] = (rxerr > 127) ?
-					CAN_ERR_CRTL_RX_PASSIVE :
-					CAN_ERR_CRTL_TX_PASSIVE;
-			cf->data[6] = txerr;
-			cf->data[7] = rxerr;
+		/* Entering bus-off needs the controller reset and the restart
+		 * scheduling, so keep it on the BOIS interrupt rather than the
+		 * error counters.
+		 */
+		/* Mask all three threshold interrupts right away: a bus-off is
+		 * reported once and stays quiet until the controller is
+		 * restarted, and the next restart re-arms them in
+		 * phytium_can_start().
+		 *
+		 * PWIE/PEIE have to go with BOIE.  Bus-off means both counters
+		 * are far past their thresholds, so PWIS/PEIS stay asserted for
+		 * as long as their enables are set, and the enables would never
+		 * be dropped again: phytium_can_sync_error_irqs() is only reached
+		 * through phytium_can_update_state(), which refuses to run once
+		 * the state is BUS_OFF.  A bus-off entered between two counter
+		 * refreshes would therefore latch a level-triggered interrupt
+		 * storm that nothing below can clear.
+		 */
+		phytium_can_clr_reg_bits(cdev, CAN_INTR,
+					 INTR_BOIE | INTR_PWIE | INTR_PEIE);
+		if (cdev->can.state != CAN_STATE_BUS_OFF) {
+			can_change_state(ndev, cf, CAN_STATE_BUS_OFF,
+					 CAN_STATE_BUS_OFF);
+			/* Leave device in Config Mode in bus-off state */
+			phytium_can_write(cdev, CAN_CTRL, CTRL_RST);
+			can_bus_off(ndev);
+			reported = true;
 		}
-	} else if (isr & INTR_PWIS) {
-		netdev_dbg(ndev, "error_warning %s: txerr :%u rxerr :%u\n",
-			   __func__, txerr, rxerr);
-		cdev->can.state = CAN_STATE_ERROR_WARNING;
-		cdev->can.can_stats.error_warning++;
-		phytium_can_set_reg_bits(cdev, CAN_INTR, INTR_PWIC);
-		phytium_can_set_reg_bits(cdev, CAN_INTR, INTR_TEIC);
-		phytium_can_set_reg_bits(cdev, CAN_INTR, INTR_EIC);
-		if (skb) {
-			cf->can_id |= CAN_ERR_CRTL;
-			cf->data[1] |= (txerr > rxerr) ?
-					CAN_ERR_CRTL_TX_WARNING :
-					CAN_ERR_CRTL_RX_WARNING;
-			cf->data[6] = txerr;
-			cf->data[7] = rxerr;
-		}
+	} else {
+		reported = phytium_can_update_state(ndev, cf);
 	}
 
 	/* Check for RX FIFO Overflow interrupt */
@@ -740,14 +882,27 @@ static void phytium_can_err_interrupt(struct net_device *ndev, u32 isr)
 		if (skb) {
 			cf->can_id |= CAN_ERR_CRTL;
 			cf->data[1] |= CAN_ERR_CRTL_RX_OVERFLOW;
+			reported = true;
 		}
 	}
 
-	if (skb) {
-		stats->rx_packets++;
-		stats->rx_bytes += cf->can_dlc;
-		netif_rx(skb);
+	if (!skb)
+		return;
+
+	/* Nothing was written into the frame: an error frame carrying no
+	 * information at all would reach the stack and be counted as a received
+	 * frame, so drop it instead.  A transition found by
+	 * phytium_can_update_state() was already reported with a frame of its
+	 * own if the allocation above failed.
+	 */
+	if (!reported) {
+		kfree_skb(skb);
+		return;
 	}
+
+	stats->rx_packets++;
+	stats->rx_bytes += cf->can_dlc;
+	netif_rx(skb);
 }
 
 /**
@@ -823,8 +978,15 @@ static irqreturn_t phytium_can_isr(int irq, void *dev_id)
 
 	/* Check for the type of error interrupt and Processing it */
 	if (isr & (INTR_EIS | INTR_RFIS | INTR_BOIS | INTR_PWIS | INTR_PEIS)) {
-		phytium_can_clr_reg_bits(cdev, CAN_INTR, (INTR_EIE | INTR_RFIE |
-					 INTR_BOIE | INTR_PWIE | INTR_PEIE));
+		/* Leave PWIE/PEIE/BOIE alone here: PWIS/PEIS are level-triggered
+		 * and their enables are gated against the current counter levels
+		 * by phytium_can_sync_error_irqs() (called from update_state),
+		 * and all three are masked together only once bus-off has been
+		 * entered (see phytium_can_err_interrupt()), so they must not be
+		 * dropped here.  Only EIS is cleared as a safety net (never
+		 * enabled).
+		 */
+		phytium_can_clr_reg_bits(cdev, CAN_INTR, (INTR_EIE | INTR_RFIE));
 		phytium_can_err_interrupt(dev, isr);
 		phytium_can_set_reg_bits(cdev, CAN_INTR, (INTR_EIC | INTR_RFIC |
 					 INTR_BOIC | INTR_PWIC | INTR_PEIC));
