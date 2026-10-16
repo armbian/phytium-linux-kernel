@@ -290,7 +290,7 @@
 #define RGB_TO_YUV_TABLE_SIZE 12
 
 #ifdef CONFIG_PHYTIUM_DEC
-/* DEC400 register */
+/* DEC registers */
 #define DEC_CONTROL 0x0800
 #define DEC_CONTROL_EX 0x0804
 #define DEC_CONTROL_EX2 0x0808

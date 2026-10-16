@@ -915,19 +915,7 @@ irqreturn_t phytium_dp_power_on_irq_handler(int irq, void *data)
 static enum drm_connector_status
 phytium_connector_detect(struct drm_connector *connector, bool force)
 {
-#ifdef CONFIG_VERISILICON_POWER_OPERATION
-		struct phytium_dp_device *phytium_dp = connector_to_dp_device(connector);
-		struct drm_device *dev = phytium_dp->dev;
-		struct ftd330_drm_private *priv = dev->dev_private;
-		uint32_t group_offset = priv->dp_reg_base[phytium_dp->port];
-	
-		if ((phytium_readl_reg(priv, group_offset, PHYTIUM_DP_SINK_HPD_STATE) & 0x00000001) == 0)
-			return connector_status_disconnected;
-	
-		return connector_status_connected;
-#else
-		return connector_status_connected;
-#endif
+	return connector_status_connected;
 }
 
 static void

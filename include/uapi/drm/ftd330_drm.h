@@ -1107,20 +1107,12 @@ struct drm_ftd330_get_hist_info {
 	} u;
 };
 
-struct drm_ftd330_pvric_offset {
+struct drm_ftd330_fbc_offset {
 	__u32 format;
 	__u32 handles[3];
 	__u32 header_size[3];
 
 	__u64 offsets[3];
-};
-
-struct drm_ftd330_pvric_clear {
-	__u64 color[3];
-};
-
-struct drm_ftd330_pvric_const {
-	struct drm_ftd330_color color[2];
 };
 
 struct drm_ftd330_brightness {
@@ -1234,7 +1226,8 @@ struct drm_ftd330_sr2000 {
 	struct drm_ftd330_ssr3_config ssr3;
 	struct drm_ftd330_y2r_config y2r;
 };
-struct dc_dec400_fc{
+
+struct dc_dec_fc {
 	bool fc_enable;
 	__u32 fc_size;
 	__u32 fc_rgby_value;
@@ -1248,7 +1241,7 @@ struct dc_dec400_fc{
 #define DRM_FTD330_GET_WB_FRM_DONE 0x07
 
 #define DRM_IOCTL_FTD330_GET_FBC_OFFSET \
-	DRM_IOWR(DRM_COMMAND_BASE + DRM_FTD330_GET_FBC_OFFSET, struct drm_ftd330_pvric_offset)
+	DRM_IOWR(DRM_COMMAND_BASE + DRM_FTD330_GET_FBC_OFFSET, struct drm_ftd330_fbc_offset)
 #define DRM_IOCTL_FTD330_SW_RESET DRM_IOWR(DRM_COMMAND_BASE + DRM_FTD330_SW_RESET, struct drm_ftd330_reset)
 #define DRM_IOCTL_FTD330_GEM_QUERY \
 	DRM_IOWR(DRM_COMMAND_BASE + DRM_FTD330_GEM_QUERY, struct drm_ftd330_gem_query_info)

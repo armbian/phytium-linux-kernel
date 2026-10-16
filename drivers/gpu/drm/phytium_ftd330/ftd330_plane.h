@@ -84,12 +84,9 @@ struct ftd330_plane_state {
 	struct drm_property_blob *watermark;
 	struct drm_property_blob *y2r_coef;
 	struct drm_property_blob *lut_3d;
-	struct drm_property_blob *pvric_clear;
-	struct drm_property_blob *pvric_const;
 	struct drm_framebuffer *fb_ext;
 
 	bool lut_3d_changed;
-	bool pvric_color_changed;
 	struct ftd330_drm_property_state drm_states[FTD330_DC_MAX_PROPERTY_NUM];
 };
 
@@ -112,8 +109,6 @@ struct ftd330_plane {
 	struct drm_property *watermark_prop;
 	struct drm_property *y2r_prop;
 	struct drm_property *lut_3d_prop;
-	struct drm_property *pvric_clear_prop;
-	struct drm_property *pvric_const_prop;
 	struct drm_property *ext_layer_fb;
 
 	struct ftd330_drm_property_group properties;

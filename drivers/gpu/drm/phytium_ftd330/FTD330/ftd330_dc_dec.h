@@ -99,12 +99,12 @@ struct dc_dec_fb {
 	void *ts_dma_buf[DEC_PLANE_MAX];
 };
 
-struct dc_dec400l {
+struct dc_dec {
 	struct dc_dec_stream stream[STREAM_TOTAL];
 	u32 stream_status;
 };
 
-int dc_dec_config(struct dc_dec400l *dec400l, struct dc_dec_fb *dec_fb, u8 stream_base);
-int dc_dec_commit(struct dc_dec400l *dec400l, struct dc_hw *hw);
+int dc_dec_config(struct dc_dec *dec, struct dc_dec_fb *dec_fb, u8 stream_base);
+int dc_dec_commit(struct dc_dec *dec, struct dc_hw *hw);
 void phytium_dec_init(struct dc_hw *hw);
 #endif /* _FTD330_DC_DEC_H_ */

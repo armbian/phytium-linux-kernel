@@ -167,10 +167,11 @@ struct phytium_device_info {
 };
 
 /**
- * struct clk_imx_acm_pm_domains - structure for multi power domain
+ * struct phytium_pm_domains - structure for multi power domain
  * @pd_dev: power domain device
  * @pd_dev_link: power domain device link
- * @num_domains: power domain nummber
+ * @num_domains: power domain number
+ * @attached: whether the power domains were attached successfully
  */
 struct phytium_pm_domains {
 	struct device **pd_dev;

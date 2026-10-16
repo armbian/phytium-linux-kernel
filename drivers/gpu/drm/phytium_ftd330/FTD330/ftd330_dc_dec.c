@@ -18,14 +18,14 @@
 #define UP_ALIGN(x, align) ((x + align - 1) & ~(align - 1))
 #define fourcc_mod_ftd330_get_tile_mode(val) ((u8)((val) & DRM_FORMAT_MOD_FTD330_DEC_TILE_MODE_MASK))
 
-static inline bool _is_stream_changed(struct dc_dec400l *dec400l, u8 stream_id)
+static inline bool _is_stream_changed(struct dc_dec *dec, u8 stream_id)
 {
-	return dec400l->stream[stream_id].dirty;
+	return dec->stream[stream_id].dirty;
 }
 
-static inline bool _is_stream_valid(struct dc_dec400l *dec400l, u8 stream_id)
+static inline bool _is_stream_valid(struct dc_dec *dec, u8 stream_id)
 {
-	return !!(dec400l->stream[stream_id].main_base_addr);
+	return !!(dec->stream[stream_id].main_base_addr);
 }
 
 void phytium_dec_init(struct dc_hw *hw)
@@ -41,18 +41,17 @@ void phytium_dec_init(struct dc_hw *hw)
 }
 
 
-static void _enable_stream(struct dc_dec400l *dec400l, struct dc_hw *hw, u8 stream_id)
+static void _enable_stream(struct dc_dec *dec, struct dc_hw *hw, u8 stream_id)
 {
-	if (!(dec400l->stream_status & (1 << stream_id))) {
-		dec400l->stream_status |= 1 << stream_id;
-	}
+	if (!(dec->stream_status & (1 << stream_id)))
+		dec->stream_status |= 1 << stream_id;
 }
 
 
-static void _disable_stream(struct dc_dec400l *dec400l, struct dc_hw *hw, u8 stream_id)
+static void _disable_stream(struct dc_dec *dec, struct dc_hw *hw, u8 stream_id)
 {
-	if ((dec400l->stream_status & (1 << stream_id)))
-		dec400l->stream_status &= ~(1 << stream_id);
+	if ((dec->stream_status & (1 << stream_id)))
+		dec->stream_status &= ~(1 << stream_id);
 }
 
 static u16 get_dec_tile_size(u8 tile_mode, u8 cpp)
@@ -198,7 +197,7 @@ static void drm_phy_get_align_size(uint32_t *width, uint32_t *height, uint32_t f
 		tile_mode = fourcc_mod_ftd330_get_tile_mode(mod);
 	}
 
-	/*alignment requirements for dec400 sub-IP*/
+	/* Alignment requirements for the DEC sub-IP */
 	switch (tile_mode) {
 	case DRM_FORMAT_MOD_FTD330_DEC_TILE_8X8_XMAJOR:
 		if (format == DRM_FORMAT_YUYV || format == DRM_FORMAT_UYVY ||
@@ -410,7 +409,7 @@ static void _stream_config(struct dc_dec_fb *dec_fb, struct dc_dec_stream *strea
 		stream->main_base_addr + stream->aligned_stride * plane_height - 1;
 }
 
-static int _dec400l_config(struct dc_dec400l *dec400l, struct dc_dec_fb *dec_fb, u8 stream_base)
+static int _dec_config(struct dc_dec *dec, struct dc_dec_fb *dec_fb, u8 stream_base)
 {
 	struct dc_dec_stream stream;
 	u8 i, stream_id, num_planes = 0;
@@ -424,14 +423,14 @@ static int _dec400l_config(struct dc_dec400l *dec400l, struct dc_dec_fb *dec_fb,
 	for (i = 0; i < STREAM_COUNT; i++) {
 		stream_id = stream_base + i;
 
-		memset(&dec400l->stream[stream_id], 0, sizeof(struct dc_dec_stream));
+		memset(&dec->stream[stream_id], 0, sizeof(struct dc_dec_stream));
 
 		if (i < num_planes) {
 			memset(&stream, 0, sizeof(struct dc_dec_stream));
 			_stream_config(dec_fb, &stream, i);
-			memcpy(&dec400l->stream[stream_id], &stream, sizeof(struct dc_dec_stream));
+			memcpy(&dec->stream[stream_id], &stream, sizeof(struct dc_dec_stream));
 		}
-		dec400l->stream[stream_id].dirty = true;
+		dec->stream[stream_id].dirty = true;
 	}
 
 	if (dec_fb)
@@ -440,7 +439,7 @@ static int _dec400l_config(struct dc_dec400l *dec400l, struct dc_dec_fb *dec_fb,
 	return 0;
 }
 
-int dc_dec_config(struct dc_dec400l *dec400l, struct dc_dec_fb *dec_fb, u8 stream_base)
+int dc_dec_config(struct dc_dec *dec, struct dc_dec_fb *dec_fb, u8 stream_base)
 {
 	if (dec_fb && !dec_fb->fb)
 		return -EINVAL;
@@ -448,14 +447,14 @@ int dc_dec_config(struct dc_dec400l *dec400l, struct dc_dec_fb *dec_fb, u8 strea
 	if (dec_fb &&
 	    (fourcc_mod_ftd330_get_type(dec_fb->fb->modifier) != DRM_FORMAT_MOD_FTD330_TYPE_COMPRESSED) &&
 	    (dec_fb->fb->modifier != DRM_FORMAT_MOD_PHYTIUM_SUPER_TILED_FC))
-		_dec400l_config(dec400l, NULL, stream_base);
+		_dec_config(dec, NULL, stream_base);
 	else
-		_dec400l_config(dec400l, dec_fb, stream_base);
+		_dec_config(dec, dec_fb, stream_base);
 
 	return 0;
 }
 
-int dc_dec_commit(struct dc_dec400l *dec400l, struct dc_hw *hw)
+int dc_dec_commit(struct dc_dec *dec, struct dc_hw *hw)
 {
 	u8 i;
 	u32 stream_total = 0;
@@ -468,25 +467,25 @@ int dc_dec_commit(struct dc_dec400l *dec400l, struct dc_hw *hw)
 		stream_total = 27;
 
 	for (i = 0; i < stream_total; i++) {
-		if (!_is_stream_changed(dec400l, i))
+		if (!_is_stream_changed(dec, i))
 			continue;
 
-		if (_is_stream_valid(dec400l, i)) {
-			_enable_stream(dec400l, hw, i);
-			dc_hw_dec_stream_set(hw, dec400l->stream[i].main_base_addr,
-					     dec400l->stream[i].main_end_addr,
-					     dec400l->stream[i].ts_base_addr,
-					     dec400l->stream[i].clear_color,
-					     dec400l->stream[i].tile_mode,
-					     dec400l->stream[i].align_mode,
-					     dec400l->stream[i].format, dec400l->stream[i].depth,
+		if (_is_stream_valid(dec, i)) {
+			_enable_stream(dec, hw, i);
+			dc_hw_dec_stream_set(hw, dec->stream[i].main_base_addr,
+					     dec->stream[i].main_end_addr,
+					     dec->stream[i].ts_base_addr,
+					     dec->stream[i].clear_color,
+					     dec->stream[i].tile_mode,
+					     dec->stream[i].align_mode,
+					     dec->stream[i].format, dec->stream[i].depth,
 					     i);
 		} else {
 			dc_hw_dec_stream_disable(hw, i);
-			_disable_stream(dec400l, hw, i);
+			_disable_stream(dec, hw, i);
 		}
 
-		dec400l->stream[i].dirty = false;
+		dec->stream[i].dirty = false;
 	}
 
 	return 0;

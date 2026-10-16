@@ -95,18 +95,6 @@ config PHYTIUM_VIRTUAL_DISPLAY
 	  The content format is ARGB which Alpha is 0 for 8bits.
 	  Disabled in default.
 
-config PHYTIUM_PVRIC
-	bool "PVRIC support for Phytium display controller"
-	depends on DRM_PHYTIUM
-	default n
-	help
-	  This option enables PVRIC (PowerVR Image Compression) support
-	  for the Phytium display controller.
-	  PVRIC is a decompression function integrated into the controller,
-	  which can improve performance and reduce memory bandwidth usage by
-	  handling compressed images. Enable this option if your application
-	  benefits from image compression.
-
 config PHYTIUM_VIRTUAL_DISPLAY
 	bool "VIRTUAL DISPLAY support for Phytium display controller"
 	depends on DRM_PHYTIUM

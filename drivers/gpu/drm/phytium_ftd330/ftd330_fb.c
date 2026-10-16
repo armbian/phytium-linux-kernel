@@ -29,7 +29,6 @@
 #include "phytium_psr.h"
 #include "FTD330/ftd330_dc.h"
 
-#define fourcc_mod_ftd330_get_type(val) (((val)&DRM_FORMAT_MOD_FTD330_TYPE_MASK) >> 53)
 #define _FTD330_WAIT_VBLANK_TIME_OUT 100000
 
 #ifdef CONFIG_PHYTIUM_PSR
@@ -199,30 +198,26 @@ static struct drm_framebuffer *ftd330_fb_create(struct drm_device *dev, struct d
 			goto err;
 		}
 
-		if (!((fourcc_mod_ftd330_get_type(mode_cmd->modifier[i]) ==
-		       DRM_FORMAT_MOD_FTD330_TYPE_PVRIC) &&
-		      (mode_cmd->modifier[i] & DRM_FORMAT_MOD_FTD330_DEC_LOSSY))) {
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 4, 18)
-			height = drm_format_info_plane_height(info, mode_cmd->height, i);
+		height = drm_format_info_plane_height(info, mode_cmd->height, i);
 #else
 		if (i == 0)
 			height = mode_cmd->height;
 		else
 			height = mode_cmd->height / info->vsub;
 #endif
-			if (check_mul_overflow((u64)height,
-					       (u64)mode_cmd->pitches[i], &size) ||
-			    check_add_overflow(size,
-					       (u64)mode_cmd->offsets[i], &size) ||
-			    to_ftd330_gem_object(obj)->mapped_size < size) {
+		if (check_mul_overflow((u64)height,
+				       (u64)mode_cmd->pitches[i], &size) ||
+		    check_add_overflow(size,
+				       (u64)mode_cmd->offsets[i], &size) ||
+		    to_ftd330_gem_object(obj)->mapped_size < size) {
 #if KERNEL_VERSION(5, 9, 0) <= LINUX_VERSION_CODE
-				drm_gem_object_put(obj);
+			drm_gem_object_put(obj);
 #else
-				drm_gem_object_put_unlocked(obj);
+			drm_gem_object_put_unlocked(obj);
 #endif
-				ret = -EINVAL;
-				goto err;
-			}
+			ret = -EINVAL;
+			goto err;
 		}
 
 		objs[i] = to_ftd330_gem_object(obj);
@@ -480,7 +475,7 @@ void ftd330_mode_config_init(struct drm_device *dev)
 
 int ftd330_get_fbc_offset_ioctl(struct drm_device *dev, void *data, struct drm_file *file_priv)
 {
-	struct drm_ftd330_pvric_offset *args = data;
+	struct drm_ftd330_fbc_offset *args = data;
 	const struct drm_format_info *info;
 	struct drm_gem_object *obj;
 	struct ftd330_gem_object *objs[MAX_NUM_PLANES];

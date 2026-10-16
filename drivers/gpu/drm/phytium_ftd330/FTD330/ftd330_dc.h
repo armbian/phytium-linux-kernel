@@ -38,7 +38,7 @@ struct ftd330_dc {
 	struct ftd330_crtc *crtc[DC_DISPLAY_NUM];
 	struct dc_hw hw;
 #ifdef CONFIG_PHYTIUM_DEC
-	struct dc_dec400l dec400l;
+	struct dc_dec dec;
 #endif
 
 	// struct clk *core_clk;

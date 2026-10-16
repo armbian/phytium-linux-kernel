@@ -20,17 +20,13 @@ extern "C" {
  *
  * DEC(Decompressor-Compressor) format consists of category (3 bits),
  * tile mode (6 bits) and align mode (2 bits).
- *
- * PVRIC(PowerVR Image Compression) format consists of category (3 bits),
- * tile mode (6 bits) and lossless/lossy mode (2 bits).
  */
 
 #define DRM_FORMAT_MOD_FTD330_TYPE_NORMAL 0x00
 #define DRM_FORMAT_MOD_FTD330_TYPE_COMPRESSED 0x01
-#define DRM_FORMAT_MOD_FTD330_TYPE_PVRIC 0x02
-#define DRM_FORMAT_MOD_FTD330_TYPE_DECNANO 0x03
+#define DRM_FORMAT_MOD_FTD330_TYPE_DEC_NANO 0x03
 #define DRM_FORMAT_MOD_FTD330_TYPE_ETC2 0x04
-#define DRM_FORMAT_MOD_FTD330_TYPE_DEC400A 0x05
+#define DRM_FORMAT_MOD_FTD330_TYPE_DEC_A 0x05
 #define DRM_FORMAT_MOD_FTD330_TYPE_MASK ((__u64)0x07 << 53)
 
 #define fourcc_mod_ftd330_code(type, val) \
@@ -95,9 +91,9 @@ extern "C" {
 #define DRM_FORMAT_MOD_FTD330_DEC_LOSSY (0x01 << 8)
 #define DRM_FORMAT_MOD_FTD330_DEC_LOSSLESS (0x01 << 9)
 
-#define DRM_FORMAT_MOD_FTD330_DECNANO_NON_SAMPLE (0x01 << 10)
-#define DRM_FORMAT_MOD_FTD330_DECNANO_H_SAMPLE (0x02 << 10)
-#define DRM_FORMAT_MOD_FTD330_DECNANO_HV_SAMPLE (0x03 << 10)
+#define DRM_FORMAT_MOD_FTD330_DEC_NANO_NON_SAMPLE (0x01 << 10)
+#define DRM_FORMAT_MOD_FTD330_DEC_NANO_H_SAMPLE (0x02 << 10)
+#define DRM_FORMAT_MOD_FTD330_DEC_NANO_HV_SAMPLE (0x03 << 10)
 #define DRM_FORMAT_MOD_FTD330_DEC_YUV_TRANSFORM_SHIFT 12
 #define DRM_FORMAT_MOD_FTD330_DEC_YUV_TRANSFORM_MASK (0x01 << 12)
 #define DRM_FORMAT_MOD_FTD330_DEC_YUV_TRANSFORM_DISABLE 0x00
@@ -121,14 +117,12 @@ extern "C" {
 	fourcc_mod_ftd330_code(DRM_FORMAT_MOD_FTD330_TYPE_COMPRESSED, \
 			   ((tile) | (align << DRM_FORMAT_MOD_FTD330_DEC_ALIGN_SHIFT)))
 
-#define fourcc_mod_ftd330_dec400a_code(tile, yuv_transform)    \
-	fourcc_mod_ftd330_code(DRM_FORMAT_MOD_FTD330_TYPE_DEC400A, \
-			   ((tile) |                       \
-			    (yuv_transform << DRM_FORMAT_MOD_FTD330_DEC_YUV_TRANSFORM_SHIFT)))
-#define fourcc_mod_ftd330_pvric_code(tile, lossy) \
-	fourcc_mod_ftd330_code(DRM_FORMAT_MOD_FTD330_TYPE_PVRIC, ((tile) | (lossy)))
-#define fourcc_mod_ftd330_decnano_code(tile, mode) \
-	fourcc_mod_ftd330_code(DRM_FORMAT_MOD_FTD330_TYPE_DECNANO, ((tile) | (mode)))
+#define fourcc_mod_ftd330_dec_a_code(tile, yuv_transform) \
+	fourcc_mod_ftd330_code(DRM_FORMAT_MOD_FTD330_TYPE_DEC_A, \
+			       ((tile) | \
+				((yuv_transform) << DRM_FORMAT_MOD_FTD330_DEC_YUV_TRANSFORM_SHIFT)))
+#define fourcc_mod_ftd330_dec_nano_code(tile, mode) \
+	fourcc_mod_ftd330_code(DRM_FORMAT_MOD_FTD330_TYPE_DEC_NANO, ((tile) | (mode)))
 #define fourcc_mod_ftd330_etc2_code(tile) fourcc_mod_ftd330_code(DRM_FORMAT_MOD_FTD330_TYPE_ETC2, tile)
 
 #define DRM_FORMAT_MOD_FTD330_NORM_MODE_MASK 0x3F

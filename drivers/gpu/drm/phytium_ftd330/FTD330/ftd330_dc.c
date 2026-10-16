@@ -824,7 +824,7 @@ static void update_fbc(struct ftd330_dc *dc, struct ftd330_plane *plane, bool *e
 		*enable = false;
 	}
 
-	dc_dec_config(&dc->dec400l, &dec_fb, stream_id);
+	dc_dec_config(&dc->dec, &dec_fb, stream_id);
 }
 
 static void disable_fbc(struct ftd330_dc *dc, struct ftd330_plane *plane)
@@ -836,7 +836,7 @@ static void disable_fbc(struct ftd330_dc *dc, struct ftd330_plane *plane)
 		return;
 
 	stream_id = get_stream_base(dc, dc_plane->id);
-	dc_dec_config(&dc->dec400l, NULL, stream_id);
+	dc_dec_config(&dc->dec, NULL, stream_id);
 }
 #endif
 
@@ -1473,7 +1473,7 @@ static void ftd330_dc_commit(struct device *dev, struct drm_crtc *crtc)
 
 #ifdef CONFIG_PHYTIUM_DEC
 	if (dc->hw.info->cap_dec)
-		dc_dec_commit(&dc->dec400l, &dc->hw);
+		dc_dec_commit(&dc->dec, &dc->hw);
 #endif
 
 	dc_hw_enable_shadow_register(&dc->hw, false, display_id);

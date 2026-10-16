@@ -75,8 +75,6 @@ static void ftd330_plane_reset(struct drm_plane *plane)
 		state = to_ftd330_plane_state(plane->state);
 		drm_property_blob_put(state->y2r_coef);
 		drm_property_blob_put(state->lut_3d);
-		drm_property_blob_put(state->pvric_clear);
-		drm_property_blob_put(state->pvric_const);
 
 		if (state->fb_ext)
 			drm_framebuffer_put(state->fb_ext);
@@ -111,8 +109,6 @@ static void _ftd330_plane_duplicate_blob(struct ftd330_plane_state *state, struc
 	state->watermark = ori_state->watermark;
 	state->y2r_coef = ori_state->y2r_coef;
 	state->lut_3d = ori_state->lut_3d;
-	state->pvric_clear = ori_state->pvric_clear;
-	state->pvric_const = ori_state->pvric_const;
 
 	if (state->watermark)
 		drm_property_blob_get(state->watermark);
@@ -120,10 +116,6 @@ static void _ftd330_plane_duplicate_blob(struct ftd330_plane_state *state, struc
 		drm_property_blob_get(state->y2r_coef);
 	if (state->lut_3d)
 		drm_property_blob_get(state->lut_3d);
-	if (state->pvric_clear)
-		drm_property_blob_get(state->pvric_clear);
-	if (state->pvric_const)
-		drm_property_blob_get(state->pvric_const);
 }
 
 static int _ftd330_plane_set_property_blob_from_id(struct drm_device *dev,
@@ -203,8 +195,6 @@ static void ftd330_plane_atomic_destroy_state(struct drm_plane *plane, struct dr
 	drm_property_blob_put(ftd330_plane_state->watermark);
 	drm_property_blob_put(ftd330_plane_state->y2r_coef);
 	drm_property_blob_put(ftd330_plane_state->lut_3d);
-	drm_property_blob_put(ftd330_plane_state->pvric_clear);
-	drm_property_blob_put(ftd330_plane_state->pvric_const);
 
 	/* dc properties */
 	ftd330_dc_destroy_drm_properties(ftd330_plane_state->drm_states, &ftd330_plane->properties);
@@ -235,14 +225,6 @@ static int ftd330_plane_atomic_set_property(struct drm_plane *plane, struct drm_
 		ret = _ftd330_plane_set_property_blob_from_id(dev, &ftd330_plane_state->lut_3d, val,
 							  sizeof(struct drm_ftd330_data_block),
 							  &ftd330_plane_state->lut_3d_changed);
-	} else if (property == ftd330_plane->pvric_clear_prop) {
-		ret = _ftd330_plane_set_property_blob_from_id(dev, &ftd330_plane_state->pvric_clear, val,
-							  sizeof(struct drm_ftd330_pvric_clear),
-							  &ftd330_plane_state->pvric_color_changed);
-	} else if (property == ftd330_plane->pvric_const_prop) {
-		ret = _ftd330_plane_set_property_blob_from_id(dev, &ftd330_plane_state->pvric_const, val,
-							  sizeof(struct drm_ftd330_pvric_const),
-							  &ftd330_plane_state->pvric_color_changed);
 	} else {
 		/* dc property */
 		ret = ftd330_dc_set_drm_property(dev, ftd330_plane_state->drm_states,
@@ -271,10 +253,6 @@ static int ftd330_plane_atomic_get_property(struct drm_plane *plane,
 		*val = (ftd330_plane_state->y2r_coef) ? ftd330_plane_state->y2r_coef->base.id : 0;
 	else if (property == ftd330_plane->lut_3d_prop)
 		*val = (ftd330_plane_state->lut_3d) ? ftd330_plane_state->lut_3d->base.id : 0;
-	else if (property == ftd330_plane->pvric_clear_prop)
-		*val = (ftd330_plane_state->pvric_clear) ? ftd330_plane_state->pvric_clear->base.id : 0;
-	else if (property == ftd330_plane->pvric_const_prop)
-		*val = (ftd330_plane_state->pvric_const) ? ftd330_plane_state->pvric_const->base.id : 0;
 	else
 		return ftd330_dc_get_drm_property(ftd330_plane_state->drm_states, &ftd330_plane->properties,
 					property, val);
@@ -1067,23 +1045,6 @@ struct ftd330_plane *ftd330_plane_create(const struct dc_hw_plane *hw_plane, str
 		drm_object_attach_property(&plane->base.base, plane->lut_3d_prop, 0);
 	}
 
-#ifdef CONFIG_PHYTIUM_PVRIC
-	if (info->cap_dec) {
-		plane->pvric_clear_prop =
-			drm_property_create(drm_dev, DRM_MODE_PROP_BLOB, "PVRIC_CLEAR", 0);
-		if (!plane->pvric_clear_prop)
-			goto error_cleanup_plane;
-
-		drm_object_attach_property(&plane->base.base, plane->pvric_clear_prop, 0);
-
-		plane->pvric_const_prop =
-			drm_property_create(drm_dev, DRM_MODE_PROP_BLOB, "PVRIC_CONST", 0);
-		if (!plane->pvric_const_prop)
-			goto error_cleanup_plane;
-
-		drm_object_attach_property(&plane->base.base, plane->pvric_const_prop, 0);
-	}
-#endif
 	if (hw_plane != NULL &&
 	    ftd330_dc_create_drm_properties(drm_dev, &plane->base.base, &hw_plane->states,
 					&plane->properties)) {
