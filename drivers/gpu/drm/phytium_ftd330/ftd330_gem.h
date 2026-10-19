@@ -34,6 +34,7 @@
 struct ftd330_gem_object {
 	struct drm_gem_object base;
 	size_t size;
+	size_t mapped_size;	/* bytes backed by the DC MMU mapping */
 	void *cookie;
 	dma_addr_t dma_addr;
 	u64 iova;

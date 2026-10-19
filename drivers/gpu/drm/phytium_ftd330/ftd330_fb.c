@@ -4,6 +4,7 @@
  */
 
 #include <linux/module.h>
+#include <linux/overflow.h>
 #include <linux/version.h>
 
 #include <drm/ftd330_drm_fourcc.h>
@@ -177,7 +178,8 @@ static struct drm_framebuffer *ftd330_fb_create(struct drm_device *dev, struct d
 	const struct drm_format_info *info;
 	struct ftd330_gem_object *objs[MAX_NUM_PLANES];
 	struct drm_gem_object *obj;
-	unsigned int height, size;
+	unsigned int height;
+	u64 size = 0;
 	unsigned char i, num_planes;
 	int ret = 0;
 
@@ -208,9 +210,11 @@ static struct drm_framebuffer *ftd330_fb_create(struct drm_device *dev, struct d
 		else
 			height = mode_cmd->height / info->vsub;
 #endif
-			size = height * mode_cmd->pitches[i] + mode_cmd->offsets[i];
-
-			if (obj->size < size) {
+			if (check_mul_overflow((u64)height,
+					       (u64)mode_cmd->pitches[i], &size) ||
+			    check_add_overflow(size,
+					       (u64)mode_cmd->offsets[i], &size) ||
+			    to_ftd330_gem_object(obj)->mapped_size < size) {
 #if KERNEL_VERSION(5, 9, 0) <= LINUX_VERSION_CODE
 				drm_gem_object_put(obj);
 #else

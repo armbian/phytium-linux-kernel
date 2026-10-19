@@ -283,8 +283,7 @@ static void _ftd330_mmu_free_buf(struct ftd330_gem_object *ftd330_obj)
 		return;
 	}
 	/* Match the count used when the sg table was mapped. */
-	nr_pages = DIV_ROUND_UP(ftd330_obj->base.import_attach->dmabuf->size,
-				FTD330_ALLOC_PAGE_SIZE);
+	nr_pages = ftd330_obj->mapped_size >> FTD330_ALLOC_PAGE_SHIFT;
 	dc_mmu_unmap_memory_and_flush(dev, priv->mmu, (u32)ftd330_obj->iova, nr_pages);
 }
 #endif
@@ -552,6 +551,7 @@ static struct ftd330_gem_object *ftd330_gem_alloc_object(struct drm_device *dev,
 		return ERR_PTR(-ENOMEM);
 
 	ftd330_obj->size = size;
+	ftd330_obj->mapped_size = size;
 	obj = &ftd330_obj->base;
 
 	ret = drm_gem_object_init(dev, obj, size);
@@ -874,6 +874,13 @@ struct drm_gem_object *ftd330_gem_prime_import_sg_table(struct drm_device *dev,
 	}
 	ftd330_obj->iova = (u64)iova;
 #endif
+	/*
+	 * The GEM object size is aligned to the kernel page size, which on
+	 * 64K page kernels can be larger than what the dma-buf actually
+	 * provides. Keep the real size for framebuffer validation and for
+	 * unmapping the DC MMU range.
+	 */
+	ftd330_obj->mapped_size = ALIGN(attach->dmabuf->size, FTD330_ALLOC_PAGE_SIZE);
 	ftd330_obj->dma_addr = sg_dma_address(sgt->sgl);
 	ftd330_obj->sgt = sgt;
 
