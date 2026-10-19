@@ -46,7 +46,7 @@ static const u32 data_ints_mask = MCI_INT_MASK_DTO | MCI_INT_MASK_DCRC | MCI_INT
 static const u32 cmd_err_ints_mask = MCI_INT_MASK_RTO | MCI_INT_MASK_RCRC | MCI_INT_MASK_RE |
 				     MCI_INT_MASK_DCRC | MCI_INT_MASK_DRTO |
 				     MCI_MASKED_INTS_SBE_BCI | MCI_MASKED_INTS_EBE |
-				     MCI_INT_MASK_FRUN;
+				     MCI_INT_MASK_FRUN | MCI_RAW_INTS_HLE;
 
 static const u32 dmac_ints_mask = MCI_DMAC_INT_ENA_FBE | MCI_DMAC_INT_ENA_DU |
 				  MCI_DMAC_INT_ENA_NIS | MCI_DMAC_INT_ENA_AIS;
@@ -871,7 +871,23 @@ static void phytium_mci_start_command(struct phytium_mci_host *host,
 				       struct mmc_command *cmd)
 {
 	u32 rawcmd;
+	u32 status;
 	unsigned long flags;
+	int ret;
+
+	ret = readl_relaxed_poll_timeout_atomic(host->base + MCI_STATUS,
+						status,
+						!(status & MCI_STATUS_CMD_FSM_MASK),
+						1, 10 * 1000);
+	if (ret) {
+		dev_err_ratelimited(host->dev,
+				    "command FSM busy before CMD%u: status=0x%08x\n",
+				    cmd->opcode, status);
+		cmd->error = -EIO;
+		memset(cmd->resp, 0, sizeof(cmd->resp));
+		phytium_mci_request_done(host, mrq);
+		return;
+	}
 
 	spin_lock_irqsave(&host->lock, flags);
 	WARN_ON(host->cmd);

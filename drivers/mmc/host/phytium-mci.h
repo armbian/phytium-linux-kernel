@@ -19,7 +19,7 @@
 /*------------------------------------------------------*/
 /* Common Definition					*/
 /*------------------------------------------------------*/
-#define PHYTIUM_MMC_DRIVER_VERSION "1.0.5"
+#define PHYTIUM_MMC_DRIVER_VERSION "1.0.6"
 
 #define MAX_BD_NUM		128
 #define SD_BLOCK_SIZE		512
@@ -221,6 +221,7 @@
 #define MCI_STATUS_FIFO_TX		(0x1 << 1) /* RO */
 #define MCI_STATUS_FIFO_EMPTY		(0x1 << 2) /* RO */
 #define MCI_STATUS_FIFO_FULL		(0x1 << 3) /* RO */
+#define MCI_STATUS_CMD_FSM_MASK		GENMASK(7, 4) /* RO */
 #define MCI_STATUS_CARD_STATUS		(0x1 << 8) /* RO */
 #define MCI_STATUS_CARD_BUSY		(0x1 << 9) /* RO */
 #define MCI_STATUS_DATA_BUSY		(0x1 << 10) /* RO */
