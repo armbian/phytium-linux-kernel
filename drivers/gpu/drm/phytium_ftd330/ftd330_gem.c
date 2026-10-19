@@ -282,7 +282,9 @@ static void _ftd330_mmu_free_buf(struct ftd330_gem_object *ftd330_obj)
 		DRM_DEV_ERROR(dev->dev, "invalid mmu.\n");
 		return;
 	}
-	nr_pages = ftd330_obj->size >> FTD330_ALLOC_PAGE_SHIFT;
+	/* Match the count used when the sg table was mapped. */
+	nr_pages = DIV_ROUND_UP(ftd330_obj->base.import_attach->dmabuf->size,
+				FTD330_ALLOC_PAGE_SIZE);
 	dc_mmu_unmap_memory_and_flush(dev, priv->mmu, (u32)ftd330_obj->iova, nr_pages);
 }
 #endif
@@ -856,7 +858,14 @@ struct drm_gem_object *ftd330_gem_prime_import_sg_table(struct drm_device *dev,
 #endif
 
 #ifdef CONFIG_PHYTIUM_MMU
-	mmu_nr_pages = ftd330_obj->size >> FTD330_ALLOC_PAGE_SHIFT;
+	/*
+	 * The DC MMU maps 4K pages while the sg table only covers the real
+	 * dmabuf size. On 64K page kernels PAGE_ALIGN() can round the GEM
+	 * object size up beyond the sg table, so map only the pages that
+	 * are actually backed by it. _ftd330_mmu_free_buf() must use the
+	 * same count.
+	 */
+	mmu_nr_pages = DIV_ROUND_UP(attach->dmabuf->size, FTD330_ALLOC_PAGE_SIZE);
 
 	ret = dc_mmu_map_sg_table_and_flush(dev, priv->mmu, sgt, mmu_nr_pages, &iova, false);
 	if (ret) {
