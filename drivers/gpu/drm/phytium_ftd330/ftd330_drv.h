@@ -178,6 +178,8 @@ struct phytium_pm_domains {
 	struct device_link **pd_dev_link;
 	int    num_domains;
 	bool   attached;
+	/* runtime PM reference held by the driver, one entry per display */
+	bool   pm_ref[DISPLAY_NUM];
 };
 
 /*

@@ -85,46 +85,51 @@ void phytium_display_power_request_se(struct ftd330_drm_private *priv, bool enab
 	uint32_t message_id = DCDP_POWER_MESSAGE_ID;
 	uint32_t value_1 = DCDP_POWER_PAYLOAD1_RESERVEE;
 	uint32_t domain_id = display_id;
+	struct device *pm_dev = NULL;
 
 	if (priv->dev_pm.attached) {
-		if (priv->dev_pm.num_domains > 1) {
-			if (enable) {
-				ret = pm_runtime_get_sync(priv->dev_pm.pd_dev[display_id]);
-				if (ret < 0) {
-					DRM_ERROR("Failed to power on DC-%d domain\n", display_id);
-					goto send_power_request_se;
-				} else {
-					pr_info("Success to power on DC-%d domain\n", display_id);
-				}
+		pm_dev = (priv->dev_pm.num_domains > 1) ?
+			 priv->dev_pm.pd_dev[display_id] : priv->dc_dev;
+
+		/*
+		 * The runtime PM usage counter is a software reference count,
+		 * so get_sync()/put_sync() must be paired with the requests
+		 * issued by this driver instead of being derived from the
+		 * hardware state.  An unmatched put_sync() - for example the
+		 * boot-time power-off of a display that was never powered on
+		 * here - underflows the counter and leaves the power domain
+		 * in an inconsistent state.
+		 */
+		if (enable) {
+			if (priv->dev_pm.pm_ref[display_id])
+				return;
+
+			ret = pm_runtime_get_sync(pm_dev);
+			if (ret < 0) {
+				/* get_sync() keeps the counter incremented */
+				pm_runtime_put_noidle(pm_dev);
+				DRM_ERROR("Failed to power on DC-%d domain: %d\n",
+						display_id, ret);
+				goto send_power_request_se;
 			}
-			else {
-				ret = pm_runtime_put_sync(priv->dev_pm.pd_dev[display_id]);
-				if (ret < 0) {
-					DRM_ERROR("Failed to power off DC-%d domain\n", display_id);
-					goto send_power_request_se;
-				} else {
-					pr_info("Success to power off DC-%d domain\n", display_id);
-				}
+
+			priv->dev_pm.pm_ref[display_id] = true;
+			pr_info("Success to power on DC-%d domain\n", display_id);
+		} else {
+			if (!priv->dev_pm.pm_ref[display_id])
+				return;
+
+			ret = pm_runtime_put_sync(pm_dev);
+			priv->dev_pm.pm_ref[display_id] = false;
+			if (ret < 0) {
+				DRM_ERROR("Failed to power off DC-%d domain: %d\n",
+						display_id, ret);
+				return;
 			}
-		} else if (priv->dev_pm.num_domains == 1) {
-			if (enable) {
-				ret = pm_runtime_get_sync(priv->dc_dev);
-				if (ret < 0) {
-					DRM_ERROR("Failed to power on DC domain\n");
-					goto send_power_request_se;
-				} else {
-					pr_info("Success to power on DC domain\n");
-				}
-			} else {
-				ret = pm_runtime_put_sync(priv->dc_dev);
-				if (ret < 0) {
-					DRM_ERROR("Failed to power off DC domain\n");
-					goto send_power_request_se;
-				} else {
-					pr_info("Success to power off DC domain\n");
-				}
-			}
+
+			pr_info("Success to power off DC-%d domain\n", display_id);
 		}
+
 		return;
 	}
 

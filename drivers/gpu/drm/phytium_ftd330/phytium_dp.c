@@ -3155,8 +3155,18 @@ void phytium_display_power_request_on(struct drm_device *dev, int physical_displ
 				pr_err("DISPLAY_%d phytium_dp get fail,power on skip\n",physical_display_id);
 			}
 			power_status = is_dp_powered(phytium_dp);
-			if (!power_status) {
+			/*
+			 * For the genpd/SCMI path a runtime PM reference has to
+			 * be taken even when the domain already reads back as
+			 * powered, otherwise the put_sync() issued from the
+			 * power-off path has nothing to release.  power_status
+			 * only decides whether the DC registers need to be
+			 * re-initialised.
+			 */
+			if (!power_status || priv->dev_pm.attached)
 				phytium_display_power_request(priv, true, DC_0);
+
+			if (!power_status) {
 				phytium_dc_registers_init(priv, DC_0);
 #ifdef CONFIG_PHYTIUM_LANE_TRAIN
 					phytium_dp_hw_init(phytium_dp);
@@ -3195,9 +3205,17 @@ void phytium_display_power_request_on(struct drm_device *dev, int physical_displ
 				pr_err("DISPLAY_1 and DISPLAY_2 not used,why power up?\n");
 				power_status = true;
 		}
+#ifdef CONFIG_PHYTIUM_POWER_OPERATION
+		/* See the comment in the DISPLAY_0 path above: the runtime PM
+		 * reference must be held for the genpd/SCMI case as well.
+		 */
+		if ((!power_status || priv->dev_pm.attached) &&
+		    (priv->info.pipe_mask & (BIT(DISPLAY_1) | BIT(DISPLAY_2))))
+			phytium_display_power_request(priv, true, DC_1);
+#endif
+
 		if (!power_status) {
 #ifdef CONFIG_PHYTIUM_LANE_TRAIN
-		phytium_display_power_request(priv, true, DC_1);
 			phytium_dc_registers_init(priv, DC_1);
 			if (priv->info.pipe_mask & BIT(DISPLAY_1)) {
 				phytium_dp = priv->phytium_dp[DISPLAY_1];
