@@ -19,7 +19,7 @@
 /*------------------------------------------------------*/
 /* Common Definition					*/
 /*------------------------------------------------------*/
-#define PHYTIUM_MMC_DRIVER_VERSION "1.0.6"
+#define PHYTIUM_MMC_DRIVER_VERSION "1.0.7"
 
 #define MAX_BD_NUM		128
 #define SD_BLOCK_SIZE		512

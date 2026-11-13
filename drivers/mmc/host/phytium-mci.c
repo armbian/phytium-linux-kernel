@@ -1069,10 +1069,22 @@ static void phytium_mci_data_xfer_next(struct phytium_mci_host *host,
 					struct mmc_request *mrq,
 					struct mmc_data *data)
 {
+	int rc;
+	u32 status;
+
 	if (mmc_op_multi(mrq->cmd->opcode) && mrq->stop &&
 	    (data->error || !mrq->sbc)) {
-		while ((readl(host->base + MCI_STATUS) & (MCI_STATUS_CARD_BUSY)))
-			cpu_relax();
+		rc = readl_relaxed_poll_timeout_atomic(host->base + MCI_STATUS,
+						       status,
+						       !(status & MCI_STATUS_CARD_BUSY),
+						       1, 500 * 1000);
+		if (rc) {
+			dev_err(host->dev,
+				"card busy timeout before stop, aborting request\n");
+			data->error = -ETIMEDOUT;
+			phytium_mci_request_done(host, mrq);
+			return;
+		}
 		phytium_mci_start_command(host, mrq, mrq->stop);
 	} else {
 		phytium_mci_request_done(host, mrq);
@@ -1151,9 +1163,6 @@ static void phytium_mci_request_timeout(struct work_struct *work)
 	struct mmc_command *cmd;
 	struct mmc_data *data;
 	unsigned long flags;
-	u32 reg_val;
-	u32 reset_mask;
-	int rc;
 
 	host = container_of(work, struct phytium_mci_host, req_timeout.work);
 
@@ -1178,21 +1187,6 @@ static void phytium_mci_request_timeout(struct work_struct *work)
 		dev_err(host->dev, "aborting data: cmd%d; %d blocks\n",
 			mrq->cmd->opcode, data->blocks);
 		phytium_mci_data_xfer_done(host, MCI_RAW_INTS_RTO, mrq, data);
-	}
-
-	if (host->current_ios_clk != 0) {
-		dev_err(host->dev, "reset mci fifo DMA controlled\n");
-		reset_mask = phytium_mci_recovery_fifo_reset_mask(host);
-		reset_mask |= MCI_CNTRL_DMA_RESET | MCI_CNTRL_CONTROLLER_RESET;
-		sdr_set_bits(host->base + MCI_CNTRL, reset_mask);
-		rc = readl_relaxed_poll_timeout_atomic(host->base + MCI_CNTRL,
-						       reg_val,
-						       !(reg_val & reset_mask),
-						       0, 500 * 1000);
-		if (rc == -ETIMEDOUT)
-			dev_err(host->dev,
-				"reset mci fifo DMA controlled timeout 0x%x\n",
-				reg_val);
 	}
 }
 
