@@ -209,7 +209,7 @@ static int i2c_phytium_pci_probe(struct pci_dev *pdev,
 	ACPI_COMPANION_SET(&adapter->dev, ACPI_COMPANION(&pdev->dev));
 	adapter->nr = controller->bus_num;
 
-	dev->capability = 0;
+	dev->capability = I2C_FUNC_SMBUS_QUICK;
 	dev->first_time_init_master = true;
 	ret = i2c_phytium_probe(dev);
 	if (ret)

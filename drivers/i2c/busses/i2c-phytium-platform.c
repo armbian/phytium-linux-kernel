@@ -236,7 +236,7 @@ static int phytium_i2c_plat_probe(struct platform_device *pdev)
 	adap->dev.of_node = pdev->dev.of_node;
 	adap->dev.fwnode = pdev->dev.fwnode;
 
-	dev->capability = 0;
+	dev->capability = I2C_FUNC_SMBUS_QUICK;
 
 	dev_pm_set_driver_flags(&pdev->dev,
 				DPM_FLAG_SMART_PREPARE |
